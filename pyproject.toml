@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openmate"
+version = "0.1.0"
+description = "A from-scratch, provider-agnostic AI agent (MVP), running on MiniMax via the Anthropic-compatible API."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Alan" }]
+dependencies = [
+    "anthropic>=0.39",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+openmate = "openmate.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["openmate"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
