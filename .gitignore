@@ -17,3 +17,12 @@ venv/
 *.sqlite
 *.sqlite3
 *.db
+
+# RAG vector store (Chroma / in-memory persistence)
+.rag/
+
+# OS / editor scratch
+.DS_Store
+.ipynb_checkpoints/
+Untitled.ipynb
+.claude/

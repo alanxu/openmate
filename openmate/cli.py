@@ -1,4 +1,4 @@
-"""The CLI edge — a thin shell over the ``Runtime``.
+"""The CLI edge — a thin shell over the ``Agent`` facade.
 
     openmate run "What is 12 * 9?"        # one-shot
     openmate chat                          # interactive REPL (remembers the conversation)
@@ -17,9 +17,9 @@ from .adapters.stores.memory import InMemoryStore
 from .adapters.stores.sqlite import SQLiteStore
 from .adapters.tools.builtin import all_tools, read_only_tools
 from .config import DEFAULT_MODEL, default_model, default_services
+from .kernel.agent import Agent
 from .kernel.errors import OpenMateError
-from .kernel.runtime import Runtime
-from .kernel.types import Agent
+from .kernel.types import Services
 
 DEFAULT_INSTRUCTIONS = (
     "You are OpenMate, a concise and helpful AI assistant. "
@@ -29,12 +29,13 @@ DEFAULT_INSTRUCTIONS = (
 )
 
 
-def _build_agent(args) -> Agent:
+def _build_agent(args, services: Services) -> Agent:
     tools = [] if args.no_tools else (all_tools() if args.allow_write else read_only_tools())
     return Agent(
         name="openmate",
         model=default_model(args.model),
         instructions=DEFAULT_INSTRUCTIONS,
+        services=services,
         tools=tools,
         max_steps=args.max_steps,
     )
@@ -48,9 +49,8 @@ def _build_store(args):
 
 async def _run_once(args) -> int:
     services = default_services(store=_build_store(args), verbose=args.verbose)
-    agent = _build_agent(args)
-    runtime = Runtime(services)
-    result = await runtime.run(agent, args.prompt, thread_id=args.thread)
+    agent = _build_agent(args, services)
+    result = await agent.run(args.prompt, thread_id=args.thread)
     if not args.verbose:  # the tracer already printed the answer in verbose mode
         print(result.text)
     return 0 if result.ok else 1
@@ -58,8 +58,7 @@ async def _run_once(args) -> int:
 
 async def _chat(args) -> int:
     services = default_services(store=_build_store(args), verbose=args.verbose)
-    agent = _build_agent(args)
-    runtime = Runtime(services)
+    agent = _build_agent(args, services)
     thread_id = args.thread or services.new_id()
     print(f"OpenMate chat · model={agent.model.name} · thread={thread_id}")
     print("Type your message; 'exit' or Ctrl-D to quit.\n")
@@ -73,7 +72,7 @@ async def _chat(args) -> int:
             continue
         if text.lower() in ("exit", "quit"):
             break
-        await runtime.run(agent, text, thread_id=thread_id)
+        await agent.run(text, thread_id=thread_id)
         print()
     return 0
 

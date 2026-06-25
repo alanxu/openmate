@@ -111,7 +111,7 @@ This is a translation layer (more involved than absorption) and is provided wher
 
 | OpenMate | LangGraph | OpenAI Agents SDK | CrewAI | AutoGen/AG2 | LlamaIndex | Pydantic AI |
 |---|---|---|---|---|---|---|
-| `Runtime` | Pregel runtime | `Runner` | `Crew.kickoff()` | `GroupChatManager` | `Workflow` | `Agent.run()` |
+| `Agent.run()` (loop) | Pregel runtime | `Runner` | `Crew.kickoff()` | `GroupChatManager` | `Workflow` | `Agent.run()` |
 | `Agent` | node/subgraph | `Agent` | `Agent` | `ConversableAgent` | `FunctionAgent` | `Agent` |
 | `ReasoningStrategy` | graph wiring | implicit loop | process type | chat pattern | workflow steps | implicit |
 | `Tool` | tool node | function tool | tool | registered fn | `FunctionTool` | tool |

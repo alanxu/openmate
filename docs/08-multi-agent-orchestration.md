@@ -4,7 +4,7 @@
 
 ## Scope & responsibilities
 
-When one agent's context, toolset, or responsibilities grow unwieldy, decompose into specialists. This module owns the `Orchestrator` port and its topologies (supervisor, handoff/swarm, crew, group-chat, agent-as-tool), the inter-agent **communication substrate** (shared state vs. message passing vs. handoff), and cross-agent concerns (global budget, loop guards, result aggregation). Each agent still runs on the same `Runtime` ([02](02-agent-loop-and-runtime.md)); orchestration wraps and sequences runs. Heuristic to keep central: **prefer the simplest topology that works** — often one agent with good tools beats a crew.
+When one agent's context, toolset, or responsibilities grow unwieldy, decompose into specialists. This module owns the `Orchestrator` port and its topologies (supervisor, handoff/swarm, crew, group-chat, agent-as-tool), the inter-agent **communication substrate** (shared state vs. message passing vs. handoff), and cross-agent concerns (global budget, loop guards, result aggregation). Each agent still runs the same loop via `Agent.run()` ([02](02-agent-loop-and-runtime.md)); orchestration wraps and sequences those runs. Heuristic to keep central: **prefer the simplest topology that works** — often one agent with good tools beats a crew.
 
 ---
 
@@ -43,10 +43,10 @@ class Blackboard:                              # shared, reducer-merged state (0
 
 ```python
 class AgentTool(Tool):
-    def __init__(self, agent: Agent, runtime: Runtime): ...
+    def __init__(self, agent: Agent): self.agent = agent
     async def invoke(self, args, ctx):
-        res = await self.runtime.run(self.agent, Input.text(args["task"]), thread_id=ctx.new_child())
-        return ToolResult([TextPart(res.final.text)])     # isolated sub-run (clean window)
+        res = await self.agent.run(args["task"], thread_id=ctx.new_child())   # facade; isolated sub-run
+        return ToolResult([TextPart(res.text)])           # clean window (sub-agent has its own Harness)
 ```
 
 - **Sequential pipeline:** run agents in order, each consuming the prior's output.
@@ -56,7 +56,7 @@ class SequentialOrchestrator(Orchestrator):
     def __init__(self, stages: list[Agent]): ...
     async def run(self, task, agents, svc):
         out = task.inputs
-        for a in self.stages: out = await runtime.run(a, Input(out), ...).final
+        for a in self.stages: out = (await a.run(out)).final   # facade; each stage consumes the prior's output
         return RunResult(final=out)
 ```
 

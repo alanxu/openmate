@@ -5,7 +5,7 @@ Requires an API key (see .env). Run:  python examples/custom_tool.py
 
 import asyncio
 
-from openmate import Agent, Runtime, default_model, default_services
+from openmate import Agent, default_model, default_services
 from openmate.adapters.tools.builtin import calculator
 from openmate.adapters.tools.native import tool
 
@@ -21,10 +21,10 @@ async def main() -> None:
         name="assistant",
         model=default_model(),
         instructions="You are a helpful assistant. Use tools when they help.",
+        services=default_services(),
         tools=[calculator, word_count],
     )
-    result = await Runtime(default_services()).run(
-        agent,
+    result = await agent.run(
         "How many words are in 'the quick brown fox jumps', and what is that count squared?",
     )
     print("\n--- final answer ---")

@@ -55,9 +55,9 @@ Stateless workers + external state = scale by adding workers.
 
 ```mermaid
 graph TD
-    Q[(Task queue)] --> W1[Runtime worker]
-    Q --> W2[Runtime worker]
-    Q --> W3[Runtime worker]
+    Q[(Task queue)] --> W1[Agent worker]
+    Q --> W2[Agent worker]
+    Q --> W3[Agent worker]
     W1 <--> ST[(Store: Postgres/Redis)]
     W2 <--> ST
     W3 <--> ST
@@ -66,7 +66,7 @@ graph TD
     OTEL[(OTel collector)] --- W1
 ```
 
-- **Stateless runtime workers:** each loads `RunState` from the `Store`, processes, checkpoints — so any worker can pick up any thread.
+- **Stateless agent workers:** each loads `RunState` from the `Store`, processes, checkpoints — so any worker can pick up any thread.
 - **Optimistic concurrency:** compare-and-swap on `rev` prevents two workers clobbering a thread; reducers merge legitimate concurrent updates ([01](01-domain-model-and-kernel.md)).
 - **Queue-driven execution:** durable queue (Redis/SQS/NATS) for fan-out, retries, and backpressure; long runs resume via checkpoints rather than holding a worker.
 - **Async concurrency:** many threads cooperate on one event loop; sandboxes/tools run in a pool.
@@ -90,7 +90,7 @@ graph TD
 - **Rate limiting & quotas:** per-user/per-tool/per-tenant token buckets; fair scheduling; backpressure surfaced as events.
 - **Versioning & reproducibility:** prompts, tool specs, agent configs, and strategies are versioned artifacts; traces record which versions ran, so any run is reproducible and a regression is traceable to a change.
 - **Secrets & security:** secrets injected at the adapter boundary (never in prompts/state); sandbox blast-radius limits ([04](04-tools-and-mcp.md)); audit log ([10](10-safety-and-guardrails.md)); tenant isolation on stores/memory.
-- **Deployment:** stateless runtime workers + `Store` + sandboxed tool tier + OTel collector + model router; CLI and HTTP/WS server are thin edges over the same `Runtime`. Health checks, graceful drain, blue/green or canary by agent version.
+- **Deployment:** stateless agent workers + `Store` + sandboxed tool tier + OTel collector + model router; CLI and HTTP/WS server are thin edges over the same `Agent.run()` loop. Health checks, graceful drain, blue/green or canary by agent version.
 
 ---
 

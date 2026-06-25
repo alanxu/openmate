@@ -68,6 +68,12 @@ class EventBus:
         self._subs.append(fn)
         return fn
 
+    def unsubscribe(self, fn: Callable[[Event], None]) -> None:
+        try:
+            self._subs.remove(fn)
+        except ValueError:
+            pass
+
     def emit(self, ev: Event) -> None:
         for fn in list(self._subs):
             fn(ev)

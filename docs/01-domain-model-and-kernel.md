@@ -71,7 +71,7 @@ class RunState:
     def to_result(self) -> "RunResult": ...             # terminal projection → RunResult
 ```
 
-`RunResult` is the terminal, caller-facing projection of a run — what `Runtime.run()`/`Runtime.resume()` ([02](02-agent-loop-and-runtime.md)) and `Orchestrator.run()` ([08](08-multi-agent-orchestration.md)) return, what the `RunFinished` event carries, and what the eval harness ([11](11-observability-and-evaluation.md)) scores. `RunState.to_result()` is its single construction path.
+`RunResult` is the terminal, caller-facing projection of a run — what `Agent.run()`/`Agent.resume()` ([02](02-agent-loop-and-runtime.md)) and `Orchestrator.run()` ([08](08-multi-agent-orchestration.md)) return, what the `RunFinished` event carries, and what the eval harness ([11](11-observability-and-evaluation.md)) scores. `RunState.to_result()` is its single construction path.
 
 ```python
 @dataclass
@@ -90,15 +90,14 @@ class RunResult:
     @property
     def ok(self) -> bool: return self.status == "done"
     @property
-    def paused(self) -> bool: return self.status == "paused"   # caller should await a decision + Runtime.resume(...)
+    def paused(self) -> bool: return self.status == "paused"   # caller should await a decision + Agent.resume(...)
 ```
 
-`RunContext` is the per-run handle passed to tools and strategies; `Services` is the resolved port bundle:
+`RunContext` is the per-run handle passed to tools and strategies; `Services` is the shared **infrastructure** bundle (the determinism seam) — note it carries no `model` (that belongs to the agent, below):
 
 ```python
 @dataclass
 class Services:
-    model: "Model"
     store: "Store"
     tracer: "Tracer"
     bus: "EventBus"
@@ -120,7 +119,7 @@ class RunContext:
 
 **Goal:** the smallest type set that lets a ReAct loop run end to end against a fake model.
 
-Ship exactly: `Role`, the three `Part`s above, `Message`, `Usage`, `RunState`, `Agent` (minimal — see below), `Services`, `RunContext`, a synchronous in-process `EventBus`, and a handful of `Event`s. Nothing else.
+Ship exactly: `Role`, the three `Part`s above, `Message`, `Usage`, `RunState`, `Agent` + `Harness` (see below), `Services`, `RunContext`, a synchronous in-process `EventBus`, and a handful of `Event`s. Nothing else.
 
 ```python
 # openmate/kernel/events.py
@@ -141,15 +140,27 @@ class EventBus:
 ```
 
 ```python
-# openmate/kernel/agent.py  (PoC form — grows in 02/03)
+# openmate/kernel/agent.py
 @dataclass
-class Agent:
-    name: str
-    model: "Model"
-    instructions: str
+class Harness:                          # the agent's ENVIRONMENT — what it can do + how it behaves
     tools: list["Tool"] = field(default_factory=list)
-    max_steps: int = 20                              # PoC stop rule; replaced by StopPolicy in 02
+    planner: "ReasoningStrategy | None" = None       # default ReAct (05)
+    memory: "Memory | None" = None                   # 06
+    context_policy: "ContextPolicy | None" = None    # 09
+    guardrails: "GuardrailSet | None" = None         # 10
+    stop: "StopPolicy | None" = None                 # 02 (PoC default = max_steps)
+
+class Agent:                            # the FACADE — the only object callers hold
+    def __init__(self, *, name: str, model: "Model", instructions: str,
+                 harness: Harness, services: Services): ...
+    # convenience: Agent(name=…, model=…, instructions=…, services=…, tools=[…], planner=…)
+    #   is also accepted — it bundles the env fields into a Harness for you.
+    async def run(self, input: "Input", *, thread_id: str | None = None) -> "RunResult": ...  # drives the loop (02)
+    def stream(self, input: "Input", *, thread_id=None) -> "AsyncIterator[Event]": ...
+    async def resume(self, thread_id: str, decision: "HumanDecision | None" = None) -> "RunResult": ...
 ```
+
+**Three roles, one facade.** `Services` is shared infrastructure (store, tracer, bus, clock, rng — the determinism seam). `Harness` is the agent's environment (tools + planner + memory + policies). `Agent` composes both behind one facade you `run()` — the loop engine ([02](02-agent-loop-and-runtime.md)) lives *inside* `Agent.run()`, not as a separate object callers touch. Sub-agents share one `Services` but each carry their own `Harness` ([08](08-multi-agent-orchestration.md)).
 
 **PoC acceptance:** construct an `Agent`, run a loop that appends `Message`s to `RunState`, emit events, and serialize the final `RunState` to JSON and back losslessly.
 

@@ -15,7 +15,8 @@ from .events import ToolCallRequested, ToolReturned
 from .types import RunContext, TextPart, ToolCallPart, ToolResultPart
 
 if TYPE_CHECKING:
-    from .types import Agent, RunState, Services
+    from .agent import Agent
+    from .types import RunState, Services
 
 
 class ToolExecutor:

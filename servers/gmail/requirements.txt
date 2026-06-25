@@ -1,0 +1,7 @@
+# Dependencies for the real Gmail MCP server (servers/gmail/server.py).
+# These are intentionally NOT in the core openmate package — an MCP server is a
+# standalone process. The offline fake_server.py needs only `mcp`.
+mcp>=1.2
+google-api-python-client>=2.0
+google-auth>=2.0
+google-auth-oauthlib>=1.0

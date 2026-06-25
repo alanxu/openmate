@@ -1,29 +1,29 @@
-# 02 — Agent Loop & Runtime
+# 02 — The Agent Loop
 
-> The engine that interprets an `Agent`. Part of OpenMate; see [architecture.md §6](architecture.md#6-the-agent-loop). Depends on [01](01-domain-model-and-kernel.md); hosts the hooks every other module plugs into.
+> The loop engine behind `Agent.run()`. Part of OpenMate; see [architecture.md §6](architecture.md#6-the-agent-loop). Depends on [01](01-domain-model-and-kernel.md); hosts the hooks every other module plugs into.
 
 ## Scope & responsibilities
 
-The `Runtime` turns a declarative `Agent` + input into a `RunResult` by driving the **agent loop**: assemble context → decide (model) → act (tools) or finish → checkpoint → check stop. It owns step sequencing, the **interceptor chain** (cross-cutting middleware), termination control, streaming, and pause/resume. It owns *mechanism*; all *policy* (how to plan, what to retrieve, when to block) is injected (architecture P3).
+`Agent.run()` ([01](01-domain-model-and-kernel.md)) drives the **agent loop**: assemble context → decide (model) → act (tools) or finish → checkpoint → check stop. The loop **engine** (this module — internal, behind the facade) owns step sequencing, the **interceptor chain** (cross-cutting middleware), termination control, streaming, and pause/resume. It owns *mechanism*; all *policy* (how to plan, what to retrieve, when to block) is injected (architecture P3).
 
-The runtime is the integration point: planning ([05](05-planning-and-reasoning.md)) plugs in as a `ReasoningStrategy`, safety ([10](10-safety-and-guardrails.md)) as guardrail interceptors, context ([09](09-context-engineering.md)) as a `ContextPolicy`, persistence ([06](06-memory-and-state.md)/[12](12-production-and-reliability.md)) as the checkpoint interceptor.
+The loop is the integration point: planning ([05](05-planning-and-reasoning.md)) plugs in as a `ReasoningStrategy`, safety ([10](10-safety-and-guardrails.md)) as guardrail interceptors, context ([09](09-context-engineering.md)) as a `ContextPolicy`, persistence ([06](06-memory-and-state.md)/[12](12-production-and-reliability.md)) as the checkpoint interceptor — all carried on the agent's `Harness`/`Services`.
 
 ---
 
 ## Core abstractions (class level)
 
 ```python
-# openmate/kernel/runtime.py
-class Runtime:
-    def __init__(self, svc: Services, interceptors: list["StepInterceptor"] | None = None):
-        self.svc = svc
-        self.chain = interceptors or default_chain()
-        self.executor = ToolExecutor(svc)
+# openmate/kernel/loop.py — the loop ENGINE behind Agent.run(); internal, callers never instantiate it.
+# Agent (01) is the facade: run()/stream()/resume()/cancel() delegate here, passing the agent
+# (which carries its own Harness + Services). The default interceptor chain (Phase 1) lives here.
+async def drive(agent: Agent, input: Input, *, thread_id: str | None = None,
+                chain: list["StepInterceptor"] | None = None) -> RunResult: ...
+async def resume(agent: Agent, thread_id: str, decision: "HumanDecision | None" = None) -> RunResult: ...
+def stream(agent: Agent, input: Input, *, thread_id=None) -> AsyncIterator[Event]: ...
+async def cancel(agent: Agent, thread_id: str) -> None: ...
 
-    async def run(self, agent: Agent, input: Input, *, thread_id: str | None = None) -> RunResult: ...
-    def stream(self, agent: Agent, input: Input, *, thread_id=None) -> AsyncIterator[Event]: ...
-    async def resume(self, thread_id: str, decision: "HumanDecision | None" = None) -> RunResult: ...
-    async def cancel(self, thread_id: str) -> None: ...
+# the Agent facade (01) is a one-line delegation, e.g.:
+#   async def run(self, input, *, thread_id=None): return await drive(self, input, thread_id=thread_id)
 
 # the unit a strategy returns each step
 StepOutcome = Union["ToolCalls", "Final", "Subgoal", "Handoff", "Pause"]
@@ -43,24 +43,65 @@ class StepInterceptor(Protocol):
 
 ---
 
+## Assembling & running an agent
+
+You rarely construct an `Agent` field by field. `assemble()` resolves a list of **tool providers** (Shell, MCP, Skills — [04](04-tools-and-mcp.md)) into the agent's `Harness`, wraps it in the `Agent` facade, and owns provider lifecycle (e.g., closing MCP connections). The yielded `Agent` is the only object you hold — call `run()`.
+
+```python
+# openmate/agent/assemble.py — one builder over the existing Agent + Services (no extra classes)
+@asynccontextmanager
+async def assemble(*, name: str, system: str, model: Model, services: Services,
+                   providers: list[ToolProvider], **policy) -> AsyncIterator[Agent]:
+    # policy passthrough → Harness: planner | memory | context_policy | guardrails | stop
+    tools: list[Tool] = []; frags: list[str] = []
+    for p in providers:                                  # build-time: setup + collect
+        await p.setup(); tools += await p.tools()
+        if (f := p.system_fragment()): frags.append(f)
+    try:
+        yield Agent(name=name, model=model, services=services,
+                    instructions="\n\n".join([system, *frags]), harness=Harness(tools=tools, **policy))
+    finally:
+        for p in providers: await p.teardown()           # close MCP, etc.
+```
+
+A complete assistant is one `assemble()` call — the email assistant is exactly this shape:
+
+```python
+async with assemble(
+        name="email", model=RouterModel(strong=…, cheap=…), services=services,
+        system="You are Alan's email assistant. Triage, summarize, draft — never send without approval.",
+        providers=[MCPProvider([gmail_server]),          # external reach (04)
+                   ShellProvider(ContainerSandbox()),    # local automation (04)
+                   SkillProvider(["./skills/email"])],   # triage / draft-reply / summarize-thread (14)
+        memory=VectorMemory(...),                        # 06 (lives on the Harness)
+        guardrails=GuardrailSet(tool=[PolicyEngine(approval=Approve.on("gmail/send_message"))]),  # 10
+    ) as email_agent:
+    await email_agent.run("Triage my inbox")             # facade; sending is gated by HITL (10)
+```
+
+`assemble()` is the substrate the email assistant instantiates; the `ToolProvider` seam and the Skills system are specified in [04](04-tools-and-mcp.md). Sending email is irreversible, so `gmail/send_message` routes through HITL approval regardless of policy ([10](10-safety-and-guardrails.md)).
+
+---
+
 ## Phase 0 — PoC (foundational)
 
 **Goal:** a correct, readable async ReAct loop with a hard step cap. No interceptors, no resume — just the spine.
 
 ```python
-async def run(self, agent, input, *, thread_id=None):
-    state = RunState(thread_id or self.svc.new_id(), [sys(agent), user(input)])
-    self.svc.bus.emit(RunStarted(...))
-    while state.status == "running" and state.step < agent.max_steps:
-        window = [*state.messages]                                  # PoC: whole transcript
-        resp = await self.svc.model.generate(window, tools=specs(agent.tools))
+# Agent.run() — the PoC spine (delegates to drive()); `self` carries model + harness + services
+async def run(self, input, *, thread_id=None):
+    svc, h = self.services, self.harness
+    state = RunState(thread_id or svc.new_id(), [sys(self), user(input)])
+    svc.bus.emit(RunStarted(...))
+    while state.status == "running" and state.step < 20:            # PoC: hard cap; StopPolicy in Phase 2
+        resp = await self.model.generate([*state.messages], tools=specs(h.tools))   # PoC: whole transcript
         state = state.with_messages(resp.message)
         calls = [p for p in resp.message.content if isinstance(p, ToolCallPart)]
         if not calls:
             state = state.finish(resp.message); break
-        results = await self.executor.dispatch(calls, agent, self.svc)  # sequential ok in PoC
+        results = await ToolExecutor(svc).dispatch(calls, self, svc)  # sequential ok in PoC
         state = state.with_messages(Message("tool", results)).advance()
-    self.svc.bus.emit(RunFinished(...))
+    svc.bus.emit(RunFinished(...))
     return state.to_result()
 ```
 

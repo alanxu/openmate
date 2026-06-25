@@ -120,7 +120,7 @@ class PolicyEngine(Guardrail):
 - **Irreversible-action rule (hard default):** moving money, placing orders, mass deletion are **never** autonomous — marked `requires_approval` and routed through HITL regardless of policy; the operator can only loosen this explicitly.
 - **Budgets & rate limits:** token/cost/step ceilings and per-tool/per-user rate limits bound runaway loops and cost-based abuse ([12](12-production-and-reliability.md)).
 - **Audit log:** every guardrail decision, authorization, handoff, and tool call is a persisted event for incident review ([11](11-observability-and-evaluation.md)).
-- **Runtime monitors:** anomaly detection on tool-call patterns; kill-switch to cancel a run/agent ([02](02-agent-loop-and-runtime.md) cancel).
+- **Live monitors:** anomaly detection on tool-call patterns; kill-switch to cancel a run/agent ([02](02-agent-loop-and-runtime.md) cancel).
 - **Content safety classifiers:** pluggable model-based classifiers for input/output as an extra layer.
 - **Red-team harness:** a corpus of injection/jailbreak/abuse cases run in CI ([11](11-observability-and-evaluation.md)).
 

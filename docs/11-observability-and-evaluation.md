@@ -43,8 +43,8 @@ class JsonlTracer(Tracer):
     def record(self, ev): self._f.write(codec.to_json(ev) + "\n")
     def span(self, name, kind, **a): return _SpanCtx(self, name, kind, a)  # logs enter/exit + duration
 
-async def run_suite(agent, cases, svc) -> list[Score]:
-    return [assert_case(c, await Runtime(svc).run(agent, c.input)) for c in cases]
+async def run_suite(agent: Agent, cases) -> list[Score]:
+    return [assert_case(c, await agent.run(c.input)) for c in cases]   # agent carries its own Services
 ```
 
 **PoC acceptance:** every run produces a readable trace tree; a small golden suite passes deterministically in CI.

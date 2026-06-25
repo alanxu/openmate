@@ -1,6 +1,6 @@
 """Domain model — the irreducible vocabulary every other module is built from.
 
-Layer 0 of the architecture (see designs/01-domain-model-and-kernel.md). Zero
+Layer 0 of the architecture (see docs/01-domain-model-and-kernel.md). Zero
 third-party dependencies. Types are immutable where practical; all
 nondeterministic inputs (clock, rng, id generation) arrive through ``Services``
 so runs are reproducible.
@@ -11,14 +11,13 @@ from __future__ import annotations
 import random
 import time
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Callable, Literal
+from typing import TYPE_CHECKING, Callable, Literal
 from uuid import uuid4
 
 if TYPE_CHECKING:  # imported only for type hints — keeps the kernel dependency-free
-    from ..ports.model import Model
     from ..ports.store import Store
-    from ..ports.tool import Tool
     from ..ports.tracer import Tracer
+    from .agent import Agent
     from .events import EventBus
 
 Role = Literal["system", "user", "assistant", "tool"]
@@ -132,7 +131,7 @@ class RunState:
 
 @dataclass
 class RunResult:
-    """What ``Runtime.run()`` returns and ``RunFinished`` carries."""
+    """What ``Agent.run()`` returns and ``RunFinished`` carries."""
 
     thread_id: str
     status: Literal["done", "paused", "error"]
@@ -177,24 +176,15 @@ class Services:
 
 
 @dataclass
-class Agent:
-    """Declarative configuration — *what* the agent is. Carries no execution logic;
-    the ``Runtime`` interprets it."""
-
-    name: str
-    model: "Model"
-    instructions: str
-    tools: list["Tool"] = field(default_factory=list)
-    max_steps: int = 12  # PoC stop rule; replaced by a composable StopPolicy in a later phase
-    temperature: float | None = None
-    max_tokens: int = 2048
-
-
-@dataclass
 class RunContext:
-    """Per-run handle passed to tools and strategies."""
+    """Per-run handle passed to tools and strategies.
+
+    ``agent`` is typed as the :class:`~openmate.kernel.agent.Agent` facade but only
+    under ``TYPE_CHECKING`` — ``types`` (pure vocabulary) never imports the
+    behavioral facade at runtime, keeping the kernel's dependency direction clean.
+    """
 
     state: RunState
     services: Services
-    agent: Agent
+    agent: "Agent"
     deadline: float | None = None  # epoch seconds; tools self-limit

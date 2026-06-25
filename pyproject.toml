@@ -19,6 +19,32 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
+# MCP client/server support (the Gmail integration). Optional: the core agent
+# runs without it; importing an MCP server without this raises a clear error.
+mcp = [
+    "mcp>=1.2",
+]
+# The real Gmail MCP server (servers/gmail/server.py). The offline fake server
+# needs only the `mcp` extra.
+gmail = [
+    "mcp>=1.2",
+    "google-api-python-client>=2.0",
+    "google-auth>=2.0",
+    "google-auth-oauthlib>=1.0",
+]
+# RAG (rag/). Chroma is the default vector store; the in-memory store and the
+# HashingEmbedder need no extras, so the pipeline + tests run without this.
+rag = [
+    "chromadb>=0.5",
+]
+# RAG UI — the JupyterLab surface over RAG + MCP (openmate/jupyter_magic.py
+# and examples/notebooks/openmate_demo.ipynb). Pulls in the kernel so you can
+# register the venv with `python -m ipykernel install --user --name=openmate`.
+rag-ui = [
+    "jupyter>=1.0",
+    "jupyterlab>=4.0",
+    "ipykernel>=6.0",
+]
 
 [project.scripts]
 openmate = "openmate.cli:main"
