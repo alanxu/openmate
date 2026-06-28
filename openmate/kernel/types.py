@@ -43,7 +43,13 @@ class ToolResultPart:
     is_error: bool = False
 
 
-Part = TextPart | ToolCallPart | ToolResultPart  # widened in later phases
+@dataclass(frozen=True)
+class ThinkingPart:
+    text: str
+    signature: str | None = None  # provider reasoning trace; captured for display/audit, not re-sent
+
+
+Part = TextPart | ToolCallPart | ToolResultPart | ThinkingPart  # widened in later phases
 
 
 @dataclass(frozen=True)

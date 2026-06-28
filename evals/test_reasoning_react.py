@@ -9,7 +9,7 @@ does the ReAct reasoning; we only check the observable outcome.
 from __future__ import annotations
 
 import pytest
-from helpers import make_services
+from metrics import make_services
 
 from openmate.adapters.tools.builtin import calculator, list_directory, read_file
 from openmate.adapters.tools.native import tool

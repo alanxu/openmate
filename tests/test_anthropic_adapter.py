@@ -9,7 +9,7 @@ from __future__ import annotations
 import types
 
 from openmate.adapters.models.anthropic import AnthropicModel
-from openmate.kernel.types import Message, TextPart, ToolCallPart, ToolResultPart
+from openmate.kernel.types import Message, TextPart, ThinkingPart, ToolCallPart, ToolResultPart
 from openmate.ports.model import ModelRequest
 
 
@@ -73,6 +73,30 @@ def test_response_parsing_maps_blocks_and_usage():
     assert resp.message.tool_calls[0].name == "calc"
     assert resp.message.tool_calls[0].args == {"x": 1}
     assert resp.usage.prompt_tokens == 10 and resp.usage.completion_tokens == 3
+
+
+def test_thinking_block_captured_but_not_resent():
+    m = _model()
+    raw = types.SimpleNamespace(
+        content=[
+            _block(type="thinking", thinking="let me reason about this", signature="sig-abc"),
+            _block(type="text", text="the answer is 4"),
+        ],
+        usage=types.SimpleNamespace(input_tokens=5, output_tokens=2),
+        stop_reason="end_turn",
+    )
+    resp = m._response_from_wire(raw)
+
+    # captured as a ThinkingPart (text + signature), excluded from .text
+    thinking = [p for p in resp.message.content if isinstance(p, ThinkingPart)]
+    assert thinking and thinking[0].text == "let me reason about this"
+    assert thinking[0].signature == "sig-abc"
+    assert resp.message.text == "the answer is 4"
+
+    # ...but not sent back on the wire (display/audit only)
+    _, wire = m._messages_to_wire([resp.message])
+    assert all(b["type"] != "thinking" for b in wire[0]["content"])
+    assert any(b["type"] == "text" for b in wire[0]["content"])
 
 
 async def test_generate_calls_client_with_right_kwargs():

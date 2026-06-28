@@ -1,13 +1,16 @@
 """Pytest configuration — gates the live (real-model) tests.
 
-The tests in ``test_live.py`` call a real model over the network (cost, latency,
-non-determinism), so they are **skipped by default**. Enable them explicitly:
+All live tests live under ``evals/`` (the metric eval harness plus the live
+smoke/integration tests); ``tests/`` is 100% offline. Live tests call a real
+model over the network (cost, latency, non-determinism), so they are **skipped
+by default**. Enable the live tier explicitly:
 
-    pytest --run-live tests/test_live.py -v
-    OPENMATE_LIVE_TESTS=1 pytest tests/test_live.py -v
+    pytest --run-live evals/ -v
+    OPENMATE_LIVE_TESTS=1 pytest evals/ -v
 
 A normal ``pytest`` run stays fully offline even when an API key is present in
-``.env``. Live tests additionally self-skip if no key is configured.
+``.env`` (the live tests are collected but skipped). Live tests additionally
+self-skip if no key is configured.
 """
 
 from __future__ import annotations
@@ -24,12 +27,22 @@ def pytest_addoption(parser) -> None:
         default=False,
         help="run live tests that call a real model (requires an API key)",
     )
+    parser.addoption(
+        "--eval-verbose",
+        action="store_true",
+        default=False,
+        help="print a live event / agent-IO trace during eval runs (use with -s)",
+    )
 
 
 def pytest_configure(config) -> None:
     config.addinivalue_line(
         "markers", "live: test that calls a real model over the network (opt-in)"
     )
+    # Bridge the flag to the harness's make_services() (a plain function, not a
+    # fixture, so it can't read pytest config directly).
+    if config.getoption("--eval-verbose"):
+        os.environ["OPENMATE_EVAL_VERBOSE"] = "1"
 
 
 def pytest_collection_modifyitems(config, items) -> None:

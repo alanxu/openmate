@@ -14,6 +14,7 @@ from .types import (
     Part,
     RunState,
     TextPart,
+    ThinkingPart,
     ToolCallPart,
     ToolResultPart,
     Usage,
@@ -25,6 +26,8 @@ def part_to_jsonable(p: Part) -> dict[str, Any]:
         return {"_t": "text", "text": p.text}
     if isinstance(p, ToolCallPart):
         return {"_t": "tool_call", "id": p.id, "name": p.name, "args": p.args}
+    if isinstance(p, ThinkingPart):
+        return {"_t": "thinking", "text": p.text, "signature": p.signature}
     if isinstance(p, ToolResultPart):
         return {
             "_t": "tool_result",
@@ -41,6 +44,8 @@ def part_from_jsonable(d: dict[str, Any]) -> Part:
         return TextPart(d["text"])
     if t == "tool_call":
         return ToolCallPart(d["id"], d["name"], d["args"])
+    if t == "thinking":
+        return ThinkingPart(d["text"], d.get("signature"))
     if t == "tool_result":
         return ToolResultPart(
             d["call_id"],

@@ -7,6 +7,7 @@ from openmate.kernel.types import (
     Message,
     RunState,
     TextPart,
+    ThinkingPart,
     ToolCallPart,
     ToolResultPart,
     Usage,
@@ -19,7 +20,14 @@ def _sample_state() -> RunState:
         messages=[
             Message("system", [TextPart("be helpful")]),
             Message("user", [TextPart("what is 2+2?")]),
-            Message("assistant", [TextPart("let me compute"), ToolCallPart("c1", "calc", {"e": "2+2"})]),
+            Message(
+                "assistant",
+                [
+                    ThinkingPart("the user wants arithmetic", signature="sig123"),
+                    TextPart("let me compute"),
+                    ToolCallPart("c1", "calc", {"e": "2+2"}),
+                ],
+            ),
             Message("tool", [ToolResultPart("c1", [TextPart("4")], is_error=False)]),
             Message("assistant", [TextPart("It is 4.")]),
         ],
@@ -42,8 +50,11 @@ def test_usage_accumulates():
 
 
 def test_message_text_accessor():
-    m = Message("assistant", [TextPart("a"), ToolCallPart("c", "n", {}), TextPart("b")])
-    assert m.text == "ab"
+    m = Message(
+        "assistant",
+        [ThinkingPart("pondering"), TextPart("a"), ToolCallPart("c", "n", {}), TextPart("b")],
+    )
+    assert m.text == "ab"  # thinking is not part of the user-visible text
     assert m.tool_calls[0].name == "n"
 
 

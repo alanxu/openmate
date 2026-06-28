@@ -23,6 +23,7 @@ from ...kernel.errors import ConfigError, ProviderError
 from ...kernel.types import (
     Message,
     TextPart,
+    ThinkingPart,
     ToolCallPart,
     ToolResultPart,
     Usage,
@@ -35,7 +36,7 @@ _DEFAULT_CAPS = ModelCapabilities(
     parallel_tools=True,
     structured_output=False,
     vision=False,
-    thinking=False,
+    thinking=True,  # MiniMax-M2 / Claude expose reasoning; captured as ThinkingPart
     prompt_caching=False,
     streaming=True,
     max_context=200_000,
@@ -152,6 +153,9 @@ class AnthropicModel:
                     blocks.append(
                         {"type": "tool_use", "id": p.id, "name": p.name, "input": p.args}
                     )
+                # ThinkingPart is intentionally not re-sent: replaying thinking blocks
+                # needs their signatures and only matters when extended thinking is
+                # explicitly enabled. We keep it for display/audit, not on the wire.
             if not blocks:  # Anthropic rejects empty content
                 blocks = [{"type": "text", "text": "(no content)"}]
             wire.append({"role": m.role, "content": blocks})
@@ -185,7 +189,14 @@ class AnthropicModel:
                         args=dict(getattr(block, "input", {}) or {}),
                     )
                 )
-            # thinking / other block types are dropped in the PoC
+            elif btype == "thinking":
+                parts.append(
+                    ThinkingPart(
+                        getattr(block, "thinking", "") or "",
+                        getattr(block, "signature", None),
+                    )
+                )
+            # other block types (e.g. redacted_thinking) are dropped
 
         usage_obj = getattr(raw, "usage", None)
         usage = Usage(

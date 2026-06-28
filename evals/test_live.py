@@ -5,8 +5,8 @@ via the Anthropic-compatible API by default — see ``.env`` / ``openmate/config
 They cost money, need the network, and are non-deterministic, so they are:
 
   * marked ``live`` and SKIPPED by default (see conftest.py). Run them with
-        pytest --run-live tests/test_live.py -v
-    or  OPENMATE_LIVE_TESTS=1 pytest tests/test_live.py -v
+        pytest --run-live evals/test_live.py -v
+    or  OPENMATE_LIVE_TESTS=1 pytest evals/test_live.py -v
   * self-skipped if no API key is configured;
   * asserted TOLERANTLY — on *tool usage* and *answer correctness* (a number, a
     name, a recovered error), never on exact wording, because real output varies.
@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 
 import pytest
-from helpers import make_services
+from metrics import make_services
 
 from openmate.adapters.tools.builtin import read_only_tools
 from openmate.adapters.tools.native import tool

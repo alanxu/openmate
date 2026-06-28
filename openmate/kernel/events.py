@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
+    from ..ports.model import ModelRequest, ModelResponse
     from .types import Message, RunResult, ToolCallPart, ToolResultPart
 
 
@@ -33,8 +34,21 @@ class MessageAdded(Event):
 
 @dataclass
 class ModelRequested(Event):
-    n_messages: int
-    n_tools: int
+    request: "ModelRequest"  # the full payload sent to the model — not just counts
+
+    @property
+    def n_messages(self) -> int:
+        return len(self.request.messages)
+
+    @property
+    def n_tools(self) -> int:
+        return len(self.request.tools or [])
+
+
+@dataclass
+class ModelResponded(Event):
+    response: "ModelResponse"  # message, usage, finish_reason, raw provider payload
+    ms: float
 
 
 @dataclass

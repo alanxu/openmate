@@ -24,6 +24,7 @@ from .events import (
     Event,
     MessageAdded,
     ModelRequested,
+    ModelResponded,
     RunFinished,
     RunStarted,
 )
@@ -137,16 +138,18 @@ async def _loop(agent: "Agent", state: RunState) -> RunState:
             return state.stop("done", "cancelled")
 
         specs = [t.spec for t in agent.tools]
-        svc.bus.emit(
-            ModelRequested(tid, state.step, svc.clock(), len(state.messages), len(specs))
-        )
         req = ModelRequest(
             messages=state.messages,
             tools=specs or None,
             temperature=agent.temperature,
             max_tokens=agent.max_tokens,
         )
+        svc.bus.emit(ModelRequested(tid, state.step, svc.clock(), req))
+        t0 = svc.clock()
         resp = await agent.model.generate(req)
+        svc.bus.emit(
+            ModelResponded(tid, state.step, svc.clock(), resp, (svc.clock() - t0) * 1000.0)
+        )
 
         state = state.with_messages(resp.message).with_usage(resp.usage)
         svc.bus.emit(MessageAdded(tid, state.step, svc.clock(), resp.message))
