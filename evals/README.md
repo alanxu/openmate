@@ -30,10 +30,12 @@ The split is by **what it costs to run**, not by test kind:
     reasoning strategies.
   - `metrics.py` — shared harness code (Wilson CI, P/R/F1, LLM-judge, the
     per-trial reporter, `make_services`).
+  - `conftest.py` — the live plumbing: the `--run-live` / `--eval-verbose` flags,
+    the `live` marker, the skip-gating, and the `live_model` fixture.
 
 Run the whole live tier with `pytest evals/ --run-live`, or one file/case by path
-or `-k`. The `--run-live` flag and the `live` marker are defined in the repo-root
-`conftest.py`, shared by both folders.
+or `-k`. A bare `pytest` runs only `tests/` (offline); the live tier is always
+invoked via an `evals/` path, which is what loads `evals/conftest.py`.
 
 ## Unit mode
 
@@ -60,7 +62,6 @@ unnoticed.
 
 ```
 pytest evals/test_evals_integration.py -v -s --run-live
-OPENMATE_LIVE_TESTS=1 pytest evals/test_evals_integration.py -v -s   # same, via env var
 ```
 
 Needs a real model — same `.env` as everything else (`ANTHROPIC_API_KEY` or

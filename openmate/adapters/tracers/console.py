@@ -22,6 +22,7 @@ from ...kernel.events import (
     MessageAdded,
     ModelRequested,
     ModelResponded,
+    ModelStreamed,
     RunFinished,
     RunStarted,
     ToolCallRequested,
@@ -58,6 +59,7 @@ def _render_parts(content, width: int = 1500) -> str:
 class ConsoleTracer:
     def __init__(self, verbose: bool = False) -> None:
         self.verbose = verbose
+        self._streamed = False  # text/thinking shown live this turn → don't reprint
 
     def attach(self, bus) -> "ConsoleTracer":
         bus.subscribe(self.record)
@@ -80,17 +82,33 @@ class ConsoleTracer:
                 for m in event.request.messages:
                     print(f"\033[35m│\033[0m \033[1m{m.role}:\033[0m {_render_parts(m.content)}")
         elif isinstance(event, ModelResponded):
-            if self.verbose:
+            # Skip the response block when it was streamed live (the deltas
+            # already showed it); otherwise print it in verbose mode.
+            if self.verbose and not self._streamed:
                 u = event.response.usage
                 print(
                     f"\033[34m╰── response · finish={event.response.finish_reason} · "
                     f"tokens in={u.prompt_tokens} out={u.completion_tokens} · {event.ms:.0f}ms\033[0m\n"
                     f"      {_render_parts(event.response.message.content)}"
                 )
+        elif isinstance(event, ModelStreamed):
+            d = event.delta
+            if d.kind == "text":
+                if not self._streamed:
+                    print("\033[1m🤖 \033[0m", end="", flush=True)
+                print(f"\033[1m{d.data}\033[0m", end="", flush=True)
+                self._streamed = True
+            elif d.kind == "thinking" and self.verbose:
+                print(f"\033[2m{d.data}\033[0m", end="", flush=True)
+                self._streamed = True
+            elif d.kind == "done" and self._streamed:
+                print()  # newline closes the streamed line
         elif isinstance(event, MessageAdded):
-            # In verbose mode the response block already shows the assistant
-            # message verbatim, so don't print it twice.
-            if not self.verbose:
+            # Streamed live already → just reset for the next turn. Otherwise
+            # print it (concise mode; verbose shows it via the response block).
+            if self._streamed:
+                self._streamed = False
+            elif not self.verbose:
                 self._print_assistant(event.message)
         elif isinstance(event, ToolCallRequested):
             c = event.call

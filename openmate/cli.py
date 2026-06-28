@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 
 from .adapters.stores.memory import InMemoryStore
@@ -87,6 +88,7 @@ def _parser() -> argparse.ArgumentParser:
     common.add_argument("--no-tools", action="store_true", help="run without any tools")
     common.add_argument("--allow-write", action="store_true", help="enable the side-effecting write_file tool")
     common.add_argument("--verbose", action="store_true", help="show model-request and checkpoint events")
+    common.add_argument("--log", action="store_true", help="log the full event stream (raw model I/O) to ~/.openmate/logs")
 
     p = argparse.ArgumentParser(prog="openmate", description="Run the OpenMate agent locally.")
     sub = p.add_subparsers(dest="command", required=True)
@@ -98,6 +100,8 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.log:
+        os.environ["OPENMATE_LOG"] = "1"  # one switch; default_services attaches the logger
     try:
         if args.command == "run":
             return asyncio.run(_run_once(args))

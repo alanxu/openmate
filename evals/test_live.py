@@ -6,7 +6,6 @@ They cost money, need the network, and are non-deterministic, so they are:
 
   * marked ``live`` and SKIPPED by default (see conftest.py). Run them with
         pytest --run-live evals/test_live.py -v
-    or  OPENMATE_LIVE_TESTS=1 pytest evals/test_live.py -v
   * self-skipped if no API key is configured;
   * asserted TOLERANTLY — on *tool usage* and *answer correctness* (a number, a
     name, a recovered error), never on exact wording, because real output varies.

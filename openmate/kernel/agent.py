@@ -88,6 +88,7 @@ class Agent:
         max_steps: int = 12,  # PoC stop rule; replaced by a composable StopPolicy later
         temperature: float | None = None,
         max_tokens: int = 2048,
+        stream_model: bool = False,  # opt into token-level model streaming (model.stream)
         **policy: Any,
     ) -> None:
         unknown = set(policy) - set(_HARNESS_POLICY)
@@ -109,6 +110,7 @@ class Agent:
         self.max_steps = max_steps
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.stream_model = stream_model
 
     @property
     def tools(self) -> list["Tool"]:

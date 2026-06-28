@@ -49,10 +49,13 @@ def default_model(model: str | None = None) -> AnthropicModel:
 
 def default_services(*, store=None, tracer=None, verbose: bool = False) -> Services:
     """Assemble a ``Services`` bundle with a console tracer wired to the event bus."""
+    from .adapters.tracers.jsonl import attach_if_enabled
+
     bus = EventBus()
     tracer = tracer if tracer is not None else ConsoleTracer(verbose=verbose)
     if isinstance(tracer, ConsoleTracer):
         tracer.attach(bus)
+    attach_if_enabled(bus)  # OPENMATE_LOG → file logging, no other wiring needed
     return Services(
         store=store if store is not None else InMemoryStore(),
         tracer=tracer,

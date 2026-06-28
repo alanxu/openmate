@@ -54,6 +54,6 @@ packages = ["openmate"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-# tests/ is 100% offline; evals/ is all live (real-model), skipped by default via
-# the `live` marker. So bare `pytest` stays offline; `pytest --run-live` adds evals.
-testpaths = ["tests", "evals"]
+# tests/ is 100% offline — a bare `pytest` runs these. The live tier lives under
+# evals/ with its own conftest; invoke it explicitly, e.g. `pytest evals/ --run-live`.
+testpaths = ["tests"]

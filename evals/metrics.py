@@ -20,6 +20,7 @@ import re
 import subprocess
 
 from openmate.adapters.stores.memory import InMemoryStore
+from openmate.adapters.tracers.jsonl import attach_if_enabled
 from openmate.kernel.agent import Agent
 from openmate.kernel.events import Event, EventBus, ToolCallRequested
 from openmate.kernel.types import Services
@@ -60,6 +61,8 @@ def make_services(verbose: bool | None = None) -> tuple[Services, list[Event]]:
         tracer = ConsoleTracer(verbose=True).attach(bus)
     else:
         tracer = NullTracer()
+
+    attach_if_enabled(bus)
 
     svc = Services(store=InMemoryStore(), tracer=tracer, bus=bus, clock=clock, new_id=new_id)
     return svc, events

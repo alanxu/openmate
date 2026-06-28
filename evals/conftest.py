@@ -6,7 +6,6 @@ model over the network (cost, latency, non-determinism), so they are **skipped
 by default**. Enable the live tier explicitly:
 
     pytest --run-live evals/ -v
-    OPENMATE_LIVE_TESTS=1 pytest evals/ -v
 
 A normal ``pytest`` run stays fully offline even when an API key is present in
 ``.env`` (the live tests are collected but skipped). Live tests additionally
@@ -33,24 +32,30 @@ def pytest_addoption(parser) -> None:
         default=False,
         help="print a live event / agent-IO trace during eval runs (use with -s)",
     )
+    parser.addoption(
+        "--log",
+        action="store_true",
+        default=False,
+        help="log the full event stream (raw model I/O) to ~/.openmate/logs",
+    )
 
 
 def pytest_configure(config) -> None:
     config.addinivalue_line(
         "markers", "live: test that calls a real model over the network (opt-in)"
     )
-    # Bridge the flag to the harness's make_services() (a plain function, not a
+    # Bridge flags to the harness's make_services() (a plain function, not a
     # fixture, so it can't read pytest config directly).
     if config.getoption("--eval-verbose"):
         os.environ["OPENMATE_EVAL_VERBOSE"] = "1"
+    if config.getoption("--log"):
+        os.environ["OPENMATE_LOG"] = "1"
 
 
 def pytest_collection_modifyitems(config, items) -> None:
-    if config.getoption("--run-live") or os.environ.get("OPENMATE_LIVE_TESTS"):
+    if config.getoption("--run-live"):
         return  # opted in — let them run
-    skip_live = pytest.mark.skip(
-        reason="live test — pass --run-live or set OPENMATE_LIVE_TESTS=1"
-    )
+    skip_live = pytest.mark.skip(reason="live test — pass --run-live")
     for item in items:
         if "live" in item.keywords:
             item.add_marker(skip_live)

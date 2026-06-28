@@ -1,6 +1,6 @@
 """ReAct reasoning — 5 cases (R1–R5), run against the REAL model.
 
-Live tests: marked ``live`` (skipped unless ``--run-live`` / ``OPENMATE_LIVE_TESTS``),
+Live tests: marked ``live`` (skipped unless ``--run-live``),
 self-skip without an API key, and assert TOLERANTLY — on tool usage (captured from
 the event bus) and answer correctness — never on exact wording. The model itself
 does the ReAct reasoning; we only check the observable outcome.

@@ -180,12 +180,28 @@ openmate chat --store sqlite --db mychat.sqlite --thread work
 
 # see every model request and checkpoint
 openmate run "Summarize the README" --verbose
+
+# log the full run — including the raw request/response to/from the model
+openmate run "What is 1234 * 9? Use the calculator." --log
 ```
 
 `openmate` is the installed console script; `python -m openmate ...` works too.
 
 Useful flags: `--model`, `--store {memory,sqlite}`, `--db`, `--thread`,
-`--max-steps`, `--no-tools`, `--allow-write`, `--verbose`. Run `openmate run --help`.
+`--max-steps`, `--no-tools`, `--allow-write`, `--verbose`, `--log`. Run `openmate run --help`.
+
+**Logging (`--log`).** Writes the whole event stream to
+`~/.openmate/logs/<timestamp>.jsonl` — one JSON object per event. Every
+`ModelRequested` line carries the full request (system + all messages + tools);
+every `ModelResponded` line carries the full response, including `raw` (the
+provider's literal payload). It's a plain event-bus subscriber
+([`adapters/tracers/jsonl.py`](openmate/adapters/tracers/jsonl.py)), independent
+of `--verbose` (which only prints to the console). Inspect it with e.g.
+`jq 'select(.event=="ModelResponded") | .raw' ~/.openmate/logs/*.jsonl`.
+
+`--log` is just a switch for the **`OPENMATE_LOG`** env var (set it to `1`, or to
+a file path to choose where) — the single thing every component checks, so the
+eval harness's `--log` and any code that builds an event bus log the same way.
 
 ### 5. Run without any API key (offline)
 

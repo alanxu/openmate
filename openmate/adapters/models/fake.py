@@ -8,13 +8,13 @@ event log), no API key required.
 from __future__ import annotations
 
 from ...kernel.types import Message, TextPart, ToolCallPart, Usage
-from ...ports.model import ModelCapabilities, ModelRequest, ModelResponse
+from ...ports.model import ModelCapabilities, ModelRequest, ModelResponse, StreamDelta
 
 _CAPS = ModelCapabilities(
     tool_calling=True,
     parallel_tools=True,
     structured_output=True,
-    streaming=False,
+    streaming=True,
     max_context=1_000_000,
 )
 
@@ -52,3 +52,14 @@ class FakeModel:
         resp = self._script[self._i]
         self._i += 1
         return resp
+
+    async def stream(self, req: ModelRequest):
+        """Scripted streaming: one text delta (if any) then the terminal ``done``.
+
+        Reuses ``generate`` so the script advances once per call, keeping the
+        streamed and non-streamed paths deterministic and in lock-step.
+        """
+        resp = await self.generate(req)
+        if resp.message.text:
+            yield StreamDelta("text", resp.message.text)
+        yield StreamDelta("done", resp)

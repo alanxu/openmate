@@ -8,7 +8,7 @@ advertises capabilities so the loop can adapt instead of assuming a floor.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, AsyncIterator, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from ..kernel.types import Message, Usage
@@ -46,9 +46,27 @@ class ModelResponse:
     raw: Any = None  # provider payload, for debugging only
 
 
+@dataclass
+class StreamDelta:
+    """One incremental chunk yielded by ``Model.stream``.
+
+    ``text``/``thinking`` carry a string fragment; the terminal ``done`` delta
+    carries the fully-assembled ``ModelResponse`` in ``data`` — so a streaming
+    caller reassembles to exactly what ``generate`` would have returned.
+    """
+
+    kind: Literal["text", "thinking", "tool_call_partial", "usage", "done"]
+    data: Any
+
+
 @runtime_checkable
 class Model(Protocol):
     name: str
     capabilities: ModelCapabilities
 
     async def generate(self, req: ModelRequest) -> ModelResponse: ...
+
+    # Optional: token-level streaming. Yields StreamDelta chunks, ending with a
+    # ``done`` delta carrying the final ModelResponse. Only used when the agent
+    # opts in (``stream_model=True``); ``generate`` remains the default path.
+    def stream(self, req: ModelRequest) -> AsyncIterator[StreamDelta]: ...

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from ..ports.model import ModelRequest, ModelResponse
+    from ..ports.model import ModelRequest, ModelResponse, StreamDelta
     from .types import Message, RunResult, ToolCallPart, ToolResultPart
 
 
@@ -49,6 +49,11 @@ class ModelRequested(Event):
 class ModelResponded(Event):
     response: "ModelResponse"  # message, usage, finish_reason, raw provider payload
     ms: float
+
+
+@dataclass
+class ModelStreamed(Event):
+    delta: "StreamDelta"  # one incremental chunk during a streamed model call
 
 
 @dataclass

@@ -17,7 +17,7 @@ environment at construction, never from prompts or state.
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, AsyncIterator
 
 from ...kernel.errors import ConfigError, ProviderError
 from ...kernel.types import (
@@ -28,7 +28,7 @@ from ...kernel.types import (
     ToolResultPart,
     Usage,
 )
-from ...ports.model import ModelCapabilities, ModelRequest, ModelResponse
+from ...ports.model import ModelCapabilities, ModelRequest, ModelResponse, StreamDelta
 from ...ports.tool import ToolSpec
 
 _DEFAULT_CAPS = ModelCapabilities(
@@ -115,6 +115,46 @@ class AnthropicModel:
             raise ProviderError(f"{type(e).__name__}: {e}") from e
 
         return self._response_from_wire(raw)
+
+    async def stream(self, req: ModelRequest) -> AsyncIterator[StreamDelta]:
+        """Token-level streaming over the same Messages API (``stream=True`` / SSE).
+
+        Yields ``text``/``thinking`` deltas as they arrive, then a terminal
+        ``done`` delta carrying the fully-assembled ``ModelResponse`` — identical
+        to what ``generate`` returns, so callers reassemble losslessly. The wire
+        kwargs are built the same way as ``generate`` (duplicated, not shared, to
+        keep ``generate`` untouched).
+        """
+        system, messages = self._messages_to_wire(req.messages)
+        kwargs: dict[str, Any] = {
+            "model": self._model,
+            "max_tokens": req.max_tokens,
+            "messages": messages,
+        }
+        if system:
+            kwargs["system"] = system
+        if req.tools:
+            kwargs["tools"] = [self._tool_to_wire(t) for t in req.tools]
+        if req.temperature is not None:
+            kwargs["temperature"] = req.temperature
+        if req.stop:
+            kwargs["stop_sequences"] = req.stop
+
+        try:
+            async with self._client.messages.stream(**kwargs) as stream:
+                async for event in stream:
+                    if getattr(event, "type", None) != "content_block_delta":
+                        continue
+                    d = event.delta
+                    if getattr(d, "type", None) == "text_delta":
+                        yield StreamDelta("text", d.text)
+                    elif getattr(d, "type", None) == "thinking_delta":
+                        yield StreamDelta("thinking", getattr(d, "thinking", "") or "")
+                final = await stream.get_final_message()
+        except Exception as e:  # noqa: BLE001 — normalize provider errors
+            raise ProviderError(f"{type(e).__name__}: {e}") from e
+
+        yield StreamDelta("done", self._response_from_wire(final))
 
     # --- translation layer -----------------------------------------------------
     def _messages_to_wire(self, messages: list[Message]) -> tuple[str, list[dict]]:

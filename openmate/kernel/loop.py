@@ -25,6 +25,7 @@ from .events import (
     MessageAdded,
     ModelRequested,
     ModelResponded,
+    ModelStreamed,
     RunFinished,
     RunStarted,
 )
@@ -146,7 +147,14 @@ async def _loop(agent: "Agent", state: RunState) -> RunState:
         )
         svc.bus.emit(ModelRequested(tid, state.step, svc.clock(), req))
         t0 = svc.clock()
-        resp = await agent.model.generate(req)
+        if agent.stream_model:  # opt-in token streaming; reassembles to one ModelResponse
+            resp = None
+            async for delta in agent.model.stream(req):
+                svc.bus.emit(ModelStreamed(tid, state.step, svc.clock(), delta))
+                if delta.kind == "done":
+                    resp = delta.data
+        else:
+            resp = await agent.model.generate(req)
         svc.bus.emit(
             ModelResponded(tid, state.step, svc.clock(), resp, (svc.clock() - t0) * 1000.0)
         )
