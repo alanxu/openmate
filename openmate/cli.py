@@ -3,6 +3,7 @@
     openmate run "What is 12 * 9?"        # one-shot
     openmate chat                          # interactive REPL (remembers the conversation)
     openmate chat --store sqlite --thread mychat   # persistent, resumable thread
+    openmate ui                            # browser UI: new task + history + trajectory view
 
 Run ``openmate --help`` for all options.
 """
@@ -78,6 +79,38 @@ async def _chat(args) -> int:
     return 0
 
 
+def _ui(args) -> int:
+    """Launch the browser UI — see ``ui/server.py`` at the project root.
+
+    Imported lazily (not at module top) so ``openmate run``/``chat`` never pay
+    for or require starlette/uvicorn, which are only needed by this subcommand.
+    """
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    ui_root = Path(__file__).resolve().parent.parent  # project root: parent of openmate/
+    server_path = ui_root / "ui" / "server.py"
+    if not server_path.exists():
+        print(
+            f"error: UI server not found at {server_path}. "
+            "The ui/ folder must sit alongside the openmate/ package.",
+            file=sys.stderr,
+        )
+        return 2
+    spec = importlib.util.spec_from_file_location("openmate_ui_server", server_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.run(
+        host=args.host,
+        port=args.port,
+        db=args.db,
+        allow_write=args.allow_write,
+        model=args.model,
+    )
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--model", default=None, help=f"model name (default: $OPENMATE_MODEL or {DEFAULT_MODEL})")
@@ -95,16 +128,27 @@ def _parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", parents=[common], help="answer a single prompt and exit")
     run.add_argument("prompt", help="the prompt to answer")
     sub.add_parser("chat", parents=[common], help="start an interactive chat session")
+
+    ui = sub.add_parser(
+        "ui", help="launch the browser UI (new task, history, collapsible trajectory view)"
+    )
+    ui.add_argument("--host", default="127.0.0.1", help="bind host (default: 127.0.0.1)")
+    ui.add_argument("--port", type=int, default=8765, help="bind port (default: 8765)")
+    ui.add_argument("--db", default="openmate.sqlite", help="sqlite db path (threads always persist)")
+    ui.add_argument("--model", default=None, help=f"model name (default: $OPENMATE_MODEL or {DEFAULT_MODEL})")
+    ui.add_argument("--allow-write", action="store_true", help="enable the side-effecting write_file tool")
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if args.log:
+    if getattr(args, "log", False):
         os.environ["OPENMATE_LOG"] = "1"  # one switch; default_services attaches the logger
     try:
         if args.command == "run":
             return asyncio.run(_run_once(args))
+        if args.command == "ui":
+            return _ui(args)
         return asyncio.run(_chat(args))
     except OpenMateError as e:
         print(f"error: {e}", file=sys.stderr)

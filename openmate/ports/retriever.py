@@ -65,6 +65,7 @@ class IngestReport:
     documents: int = 0
     chunks: int = 0
     sources: list[str] = field(default_factory=list)
+    chunk_ids: list[str] = field(default_factory=list)  # for later targeted deletion
 
 
 @runtime_checkable

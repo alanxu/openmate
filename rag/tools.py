@@ -24,11 +24,28 @@ def format_documents(docs: list[Document]) -> str:
 
 
 class RetrieveTool:
-    """``rag_search(query, k?)`` — retrieve the top-k chunks for a query."""
+    """``rag_search(query, k?)`` — retrieve the top-k chunks for a query.
 
-    def __init__(self, retriever: Retriever, *, k: int = 5, name: str = "rag_search") -> None:
+    ``scope_to_thread`` (default on) merges ``{"thread_id": ctx.state.thread_id}``
+    into every query's filters at call time, so one shared tool/retriever/vector
+    store instance naturally isolates each thread's ingested knowledge — no
+    per-thread retriever needed. Set it off for a deliberately shared/global
+    knowledge base, or pass a fixed ``base_filters`` for other static scoping.
+    """
+
+    def __init__(
+        self,
+        retriever: Retriever,
+        *,
+        k: int = 5,
+        name: str = "rag_search",
+        scope_to_thread: bool = True,
+        base_filters: dict | None = None,
+    ) -> None:
         self.retriever = retriever
         self.k = k
+        self.scope_to_thread = scope_to_thread
+        self.base_filters = base_filters
         self.spec = ToolSpec(
             name=name,
             description=(
@@ -53,7 +70,10 @@ class RetrieveTool:
         if not query:
             return ToolResult([TextPart("missing required argument: query")], is_error=True)
         k = int((args or {}).get("k") or self.k)
-        docs = await self.retriever.retrieve(query, k=k)
+        filters = dict(self.base_filters or {})
+        if self.scope_to_thread and ctx is not None and getattr(ctx, "state", None) is not None:
+            filters["thread_id"] = ctx.state.thread_id
+        docs = await self.retriever.retrieve(query, k=k, filters=filters or None)
         # Record what was retrieved so an agentic run can report its sources.
         if ctx is not None and getattr(ctx, "state", None) is not None:
             try:

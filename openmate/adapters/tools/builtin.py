@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import operator
 import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -18,6 +19,8 @@ from .native import tool
 
 _MAX_FILE_BYTES = 100_000
 _MAX_FETCH_BYTES = 20_000
+_MAX_SHELL_OUTPUT = 20_000
+_SHELL_TIMEOUT_S = 30
 
 # --- calculator: a safe arithmetic evaluator (no eval(), no names) -------------
 _BIN_OPS = {
@@ -55,43 +58,114 @@ def current_time() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _safe_path(path: str) -> Path:
-    p = Path(path).expanduser().resolve()
-    root = Path.cwd().resolve()
-    if root not in p.parents and p != root:
-        raise ValueError(f"path '{path}' is outside the working directory")
-    return p
+def _make_safe_path(extra_roots: "list[str] | None" = None):
+    """Build a path-confinement check rooted at cwd plus any ``extra_roots``.
+
+    A closure, not a module-level singleton, so callers (e.g. the UI, scoping
+    write access per thread/"folder added for editing") can confine a *set* of
+    file tools to a caller-chosen allowlist without touching the Tool port or
+    the default cwd-only behavior every other caller still gets.
+    """
+    roots = [Path.cwd().resolve(), *(Path(r).expanduser().resolve() for r in (extra_roots or []))]
+
+    def safe_path(path: str) -> Path:
+        p = Path(path).expanduser().resolve()
+        for root in roots:
+            if root in p.parents or p == root:
+                return p
+        allowed = ", ".join(str(r) for r in roots)
+        raise ValueError(f"path '{path}' is outside the allowed directories ({allowed})")
+
+    return safe_path
 
 
-@tool(side_effecting=False, idempotent=True)
-def read_file(path: str) -> str:
-    """Read a UTF-8 text file from within the working directory and return its contents."""
-    p = _safe_path(path)
-    data = p.read_text(encoding="utf-8", errors="replace")
-    if len(data) > _MAX_FILE_BYTES:
-        return data[:_MAX_FILE_BYTES] + f"\n...[truncated, {len(data)} bytes total]"
-    return data
+def make_file_tools(extra_roots: "list[str] | None" = None) -> list:
+    """``read_file``/``write_file``/``list_directory``, confined to cwd + ``extra_roots``.
+
+    The module-level ``read_file``/``write_file``/``list_directory`` below are
+    just this factory called with no extra roots — kept as importable names for
+    backward compatibility (existing callers, tests) that reference them directly.
+    """
+    safe_path = _make_safe_path(extra_roots)
+
+    @tool(side_effecting=False, idempotent=True)
+    def read_file(path: str) -> str:
+        """Read a UTF-8 text file from an allowed directory and return its contents."""
+        p = safe_path(path)
+        data = p.read_text(encoding="utf-8", errors="replace")
+        if len(data) > _MAX_FILE_BYTES:
+            return data[:_MAX_FILE_BYTES] + f"\n...[truncated, {len(data)} bytes total]"
+        return data
+
+    @tool(side_effecting=True)
+    def write_file(path: str, content: str) -> str:
+        """Write text to a file within an allowed directory (creates or overwrites it)."""
+        p = safe_path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content, encoding="utf-8")
+        return f"wrote {len(content)} bytes to {p}"
+
+    @tool(side_effecting=False, idempotent=True)
+    def list_directory(path: str = ".") -> str:
+        """List the entries in a directory within an allowed directory tree."""
+        p = safe_path(path)
+        if not p.is_dir():
+            return f"not a directory: {path}"
+        entries = sorted(os.listdir(p))
+        if not entries:
+            return "(empty directory)"
+        return "\n".join(("📁 " if (p / e).is_dir() else "📄 ") + e for e in entries)
+
+    return [read_file, write_file, list_directory]
 
 
-@tool(side_effecting=True)
-def write_file(path: str, content: str) -> str:
-    """Write text to a file within the working directory (creates or overwrites it)."""
-    p = _safe_path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content, encoding="utf-8")
-    return f"wrote {len(content)} bytes to {p}"
+_read_file, _write_file, _list_directory = make_file_tools()
+read_file, write_file, list_directory = _read_file, _write_file, _list_directory
 
 
-@tool(side_effecting=False, idempotent=True)
-def list_directory(path: str = ".") -> str:
-    """List the entries in a directory within the working directory tree."""
-    p = _safe_path(path)
-    if not p.is_dir():
-        return f"not a directory: {path}"
-    entries = sorted(os.listdir(p))
-    if not entries:
-        return "(empty directory)"
-    return "\n".join(("📁 " if (p / e).is_dir() else "📄 ") + e for e in entries)
+def make_shell_tool(extra_roots: "list[str] | None" = None):
+    """A ``run_shell`` tool whose *working directory* is confined to cwd + ``extra_roots``.
+
+    Caveat: confinement only covers ``cwd`` — the shell itself is not sandboxed,
+    so a command can still ``cd`` or use absolute paths to act outside the
+    allowlist (e.g. ``cat /etc/passwd``). This is the same trust boundary as
+    giving a human a terminal scoped to a starting directory, not a jail. Good
+    enough for a local single-user assistant; do not expose this to untrusted
+    multi-tenant input without a real sandbox (container, VM, seccomp, etc.).
+    """
+    safe_path = _make_safe_path(extra_roots)
+
+    @tool(side_effecting=True)
+    def run_shell(command: str, cwd: str = ".") -> str:
+        """Run a shell command. ``cwd`` must be the server's working directory or
+        one of the folders added for this thread; defaults to that working
+        directory. 30s timeout, output truncated. Use for file edits, git,
+        running scripts/tests, etc."""
+        work_dir = safe_path(cwd)
+        try:
+            proc = subprocess.run(
+                command,
+                shell=True,  # noqa: S602 — intentional: this *is* a shell-command tool
+                cwd=str(work_dir),
+                capture_output=True,
+                text=True,
+                timeout=_SHELL_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return f"error: command timed out after {_SHELL_TIMEOUT_S}s"
+        out = proc.stdout or ""
+        if proc.stderr:
+            out += f"\n[stderr]\n{proc.stderr}"
+        out = out.strip() or "(no output)"
+        if len(out) > _MAX_SHELL_OUTPUT:
+            out = out[:_MAX_SHELL_OUTPUT] + f"\n...[truncated, {len(out)} bytes total]"
+        return f"exit={proc.returncode}\n{out}"
+
+    return run_shell
+
+
+_run_shell = make_shell_tool()
+run_shell = _run_shell
 
 
 @tool(side_effecting=False, idempotent=True)
@@ -108,11 +182,26 @@ def fetch_url(url: str) -> str:
     return text
 
 
-def read_only_tools() -> list:
-    """The safe, read-only default toolset."""
-    return [calculator, current_time, read_file, list_directory, fetch_url]
+def read_only_tools(extra_roots: "list[str] | None" = None) -> list:
+    """The safe, read-only default toolset, optionally confined to extra directories too.
+
+    No ``calculator`` here on purpose — it's still defined above (and used directly
+    by the test suite/examples as a simple deterministic fixture tool), but the
+    actual agent toolsets lean on ``run_shell``/a model's own arithmetic instead of
+    a second, narrower tool that does the same thing.
+    """
+    rf, _wf, ld = make_file_tools(extra_roots) if extra_roots else (read_file, write_file, list_directory)
+    return [current_time, rf, ld, fetch_url]
 
 
-def all_tools() -> list:
-    """Every built-in tool, including the side-effecting ``write_file``."""
-    return [*read_only_tools(), write_file]
+def all_tools(extra_roots: "list[str] | None" = None) -> list:
+    """Every built-in tool, including the side-effecting ``write_file``/``run_shell``.
+
+    No dedicated mkdir or calculator tool on purpose — ``run_shell`` is the
+    general-purpose escape hatch for both, and a model that already knows
+    ``mkdir -p`` or basic arithmetic doesn't need a second, narrower tool
+    teaching it the same thing.
+    """
+    rf, wf, ld = make_file_tools(extra_roots) if extra_roots else (read_file, write_file, list_directory)
+    shell = make_shell_tool(extra_roots) if extra_roots else run_shell
+    return [current_time, rf, ld, fetch_url, wf, shell]

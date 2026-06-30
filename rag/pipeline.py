@@ -33,9 +33,19 @@ class NaivePipeline:
         self.store = store
         self.batch_size = batch_size
 
-    async def ingest(self, src: str) -> IngestReport:
+    async def ingest(self, src: str, *, extra_metadata: dict | None = None) -> IngestReport:
+        """Load → chunk → embed → upsert.
+
+        ``extra_metadata`` is merged into every loaded document's metadata
+        *before* chunking, so it propagates into every chunk and (via the chunker's
+        ``{**doc.metadata, ...}``) every upserted record. This is how callers scope
+        a corpus — e.g. ``{"thread_id": tid}`` so a later ``retrieve(..., filters=...)``
+        only sees that thread's knowledge — without any change to the Loader/Chunker/
+        VectorStore ports themselves.
+        """
         report = IngestReport()
         batch: list = []  # list[Chunk]
+        chunk_ids: list[str] = []
 
         async def flush() -> None:
             if not batch:
@@ -50,12 +60,16 @@ class NaivePipeline:
             batch.clear()
 
         for doc in self.loader.load(src):
+            if extra_metadata:
+                doc.metadata = {**doc.metadata, **extra_metadata}
             report.documents += 1
             report.sources.append(doc.id)
             for chunk in self.chunker.split(doc):
                 report.chunks += 1
+                chunk_ids.append(chunk.id)
                 batch.append(chunk)
                 if len(batch) >= self.batch_size:
                     await flush()
         await flush()
+        report.chunk_ids = chunk_ids
         return report
