@@ -21,17 +21,19 @@
     <main class="main">
       <!-- Task screen: chat + trajectory + attachment bar -->
       <section id="screen-task" class="screen">
-        <div id="task-attach" class="attach-bar hidden"></div>
         <div id="messages" class="messages">
           <div class="empty-state">
             <div class="empty-title">OpenMate</div>
             <div class="empty-sub">Start a new task to begin.</div>
           </div>
         </div>
-        <form id="composer" class="composer">
-          <textarea id="input" placeholder="Message OpenMate…" rows="1"></textarea>
-          <button id="send-btn" type="submit">Send</button>
-        </form>
+        <div class="composer-area">
+          <div id="task-attach" class="attach-bar hidden"></div>
+          <form id="composer" class="composer">
+            <textarea id="input" placeholder="Message OpenMate…" rows="1"></textarea>
+            <button id="send-btn" type="submit">Send</button>
+          </form>
+        </div>
       </section>
 
       <!-- Library manager screen -->

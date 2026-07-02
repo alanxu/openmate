@@ -922,6 +922,5 @@ const initialThreadId = getUrlThreadId();
 if (initialThreadId) {
   openThread(initialThreadId);
 } else {
-  showScreen("task");
-  renderTaskAttach();
+  newTask();
 }
