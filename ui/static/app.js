@@ -37,7 +37,6 @@ let threadId = null; // current task
 let activeLibraryId = null; // library open in the library screen
 let activeProjectId = null; // project open in the project screen
 let activeLogThreadId = null; // thread whose log is open in the logs screen
-let logPollTimer = null; // tail-polling for live log updates
 let es = null; // current EventSource, if a run is in flight
 let liveAssistantBubble = null;
 let liveCards = new Map();
@@ -178,10 +177,7 @@ function setSection(name) {
   if (name === "tasks") showScreen("task");
   else if (name === "libraries") showScreen("library");
   else if (name === "projects") showScreen("project");
-  else if (name === "logs") {
-    showScreen("logs");
-    stopLogPolling();
-  }
+  else if (name === "logs") showScreen("logs");
   loadNav();
 }
 
@@ -756,13 +752,11 @@ async function loadLogsNav() {
   // If the active log thread disappeared from disk (file deleted), clear it
   // and show the empty placeholder. We do NOT auto-reopen a thread here —
   // that would recurse: loadLogsNav → openLogThread → loadLogsNav → …
-  // openLogThread handles its own view rendering.
   if (activeLogThreadId) {
     const exists = data.threads.some((t) => t.thread_id === activeLogThreadId)
       || data.orphan_logs.some((o) => o.thread_id === activeLogThreadId);
     if (!exists) {
       activeLogThreadId = null;
-      stopLogPolling();
       renderLogEmpty();
     }
   } else {
@@ -820,7 +814,6 @@ function renderLogEmpty() {
       capturing every agent↔model event — the full request payload, the wire
       kwargs sent to the provider, the raw response, tool calls and results.</div>
   </div>`;
-  stopLogPolling();
 }
 
 async function openLogThread(id) {
@@ -832,7 +825,6 @@ async function openLogThread(id) {
     el.classList.toggle("active", el.dataset.threadId === id);
   }
   await renderLogView(id, 0);
-  startLogPolling(id);
 }
 
 async function renderLogView(threadId, sinceOffset) {
@@ -845,7 +837,6 @@ async function renderLogView(threadId, sinceOffset) {
       <div class="empty-title">No log for this thread</div>
       <div class="empty-sub">${escapeHtml(((await res.json().catch(() => ({}))).error || res.statusText))}</div>
     </div>`;
-    stopLogPolling();
     return;
   }
   const data = await res.json();
@@ -1056,32 +1047,6 @@ function prettyJSON(obj) {
     return JSON.stringify(obj, null, 2);
   } catch (e) {
     return String(obj);
-  }
-}
-
-function startLogPolling(threadId) {
-  stopLogPolling();
-  // While a run is in flight, the file grows — poll every 2s for fresh entries.
-  // The viewer keeps the existing timeline; we only append.
-  logPollTimer = setInterval(async () => {
-    if (section !== "logs" || activeLogThreadId !== threadId) {
-      stopLogPolling();
-      return;
-    }
-    const tl = logsViewEl.querySelector(".log-timeline");
-    const offset = tl ? Number(tl.dataset.offset || "0") : 0;
-    try {
-      await renderLogView(threadId, offset);
-    } catch (e) {
-      // Polling errors are non-fatal — the next tick will retry.
-    }
-  }, 2000);
-}
-
-function stopLogPolling() {
-  if (logPollTimer) {
-    clearInterval(logPollTimer);
-    logPollTimer = null;
   }
 }
 
