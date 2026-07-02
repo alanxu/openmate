@@ -552,12 +552,21 @@ html, body { margin: 0; height: 100%; font-family: var(--sans); color: var(--tex
   border-top: 1px solid var(--border);
   padding: 12px 14px 14px;
   background: #1a1918;
-  display: flex;
   flex-direction: column;
   gap: 12px;
+  /* Critical: without min-height: 0 the flex item defaults to its content's
+     intrinsic min size, which prevents the .log-pre scroll area from ever
+     shrinking to its max-height. Result: a scrollbar renders but nothing
+     scrolls. */
+  min-height: 0;
 }
 .log-card.open .log-body { display: flex; }
-.log-section { display: flex; flex-direction: column; gap: 4px; }
+.log-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
 .log-section-label {
   font-size: 11px;
   font-weight: 600;
@@ -567,6 +576,7 @@ html, body { margin: 0; height: 100%; font-family: var(--sans); color: var(--tex
 }
 .log-pre {
   margin: 0;
+  display: block;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -577,7 +587,10 @@ html, body { margin: 0; height: 100%; font-family: var(--sans); color: var(--tex
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 420px;
-  overflow-y: auto;
+  overflow: auto;
+  /* Belt-and-suspenders for flex parents: keep the scroll container's height
+     pinned to its max-height so overflow actually scrolls. */
+  flex-shrink: 0;
 }
 .log-parse-error { color: var(--error); font-size: 12.5px; }
 
