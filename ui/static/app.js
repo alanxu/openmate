@@ -171,7 +171,17 @@ function setSection(name) {
     name === "projects" ? "+ New project" :
     "+ New task";  // logs section: hidden — only the nav list is useful there
   newBtn.style.display = name === "logs" ? "none" : "";
-  if (name === "logs") stopLogPolling();
+  // Switching to a workspace section must show that section's screen and hide
+  // any previously-active screen — otherwise we keep showing the chat composer
+  // at the bottom (it's inside #screen-task). Tasks/Libraries/Projects get the
+  // same treatment for consistency.
+  if (name === "tasks") showScreen("task");
+  else if (name === "libraries") showScreen("library");
+  else if (name === "projects") showScreen("project");
+  else if (name === "logs") {
+    showScreen("logs");
+    stopLogPolling();
+  }
   loadNav();
 }
 
