@@ -12,7 +12,6 @@ const newBtn = document.getElementById("new-btn");
 const taskAttachEl = document.getElementById("task-attach");
 const libraryViewEl = document.getElementById("library-view");
 const projectViewEl = document.getElementById("project-view");
-const logsListEl = document.getElementById("logs-list");
 const logsViewEl = document.getElementById("logs-view");
 const sectionTabs = [...document.querySelectorAll(".section-tab")];
 const screens = {
@@ -765,17 +764,17 @@ async function loadLogsNav() {
 }
 
 function renderLogsList(data) {
-  logsListEl.innerHTML = "";
+  navListEl.innerHTML = "";
   const header = document.createElement("div");
   header.className = "logs-header";
   header.textContent = data.log_dir ? `Logs · ${data.log_dir}` : "Logs";
-  logsListEl.appendChild(header);
+  navListEl.appendChild(header);
   const hasAny = data.threads.length || (data.orphan_logs && data.orphan_logs.length);
   if (!hasAny) {
     const e = document.createElement("div");
     e.className = "nav-empty";
     e.textContent = "No log files yet — run a task to create one.";
-    logsListEl.appendChild(e);
+    navListEl.appendChild(e);
     return;
   }
   for (const t of data.threads) {
@@ -787,13 +786,13 @@ function renderLogsList(data) {
       <div class="nav-sub">${escapeHtml(t.thread_id.slice(0, 12))} · ${sub}</div>`;
     item.title = t.thread_id;
     item.addEventListener("click", () => openLogThread(t.thread_id));
-    logsListEl.appendChild(item);
+    navListEl.appendChild(item);
   }
   if (data.orphan_logs && data.orphan_logs.length) {
     const orph = document.createElement("div");
     orph.className = "logs-orphan-label";
     orph.textContent = "Orphaned log files (no matching thread)";
-    logsListEl.appendChild(orph);
+    navListEl.appendChild(orph);
     for (const o of data.orphan_logs) {
       const item = document.createElement("div");
       item.className = "nav-item logs-nav-item" + (o.thread_id === activeLogThreadId ? " active" : "");
@@ -801,7 +800,7 @@ function renderLogsList(data) {
       item.innerHTML = `<div class="nav-name">${escapeHtml(o.thread_id)}</div>
         <div class="nav-sub">${o.size} bytes · orphaned</div>`;
       item.addEventListener("click", () => openLogThread(o.thread_id));
-      logsListEl.appendChild(item);
+      navListEl.appendChild(item);
     }
   }
 }
@@ -821,7 +820,7 @@ async function openLogThread(id) {
   // Update the active highlight in the existing nav list without refetching.
   // Refetching would loop: loadLogsNav triggers this function when there's an
   // active thread, which triggers loadLogsNav again, etc.
-  for (const el of logsListEl.querySelectorAll(".logs-nav-item")) {
+  for (const el of navListEl.querySelectorAll(".logs-nav-item")) {
     el.classList.toggle("active", el.dataset.threadId === id);
   }
   await renderLogView(id, 0);
