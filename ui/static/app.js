@@ -52,7 +52,7 @@ function showEmptyState() {
   clearMessages();
   const div = document.createElement("div");
   div.className = "empty-state";
-  div.innerHTML = `<div class="empty-title">OpenMate</div><div class="empty-sub">Start a new task to begin.</div>`;
+  div.innerHTML = `<img class="empty-logo" src="/static/logo.png" alt="OpenMate" /><div class="empty-sub">Start a new task to begin.</div>`;
   messagesEl.appendChild(div);
 }
 function scrollToBottom() {
