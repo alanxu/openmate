@@ -69,19 +69,19 @@ def test_default_log_path_under_openmate_logs():
 
 
 def test_attach_if_enabled_is_gated_by_env(tmp_path, monkeypatch):
-    """The single switch: OPENMATE_LOG off -> nothing; set to a path -> logs there."""
+    """The single switch: OPENMATE_LOG off -> nothing; set -> logger attached."""
     import openmate.adapters.tracers.jsonl as j
 
-    j._session_logger = None  # reset module singleton for the test
+    j._singleton = None  # reset module singleton for the test
+    j._attached_buses.clear()
     bus = EventBus()
 
     monkeypatch.delenv("OPENMATE_LOG", raising=False)
-    j.attach_if_enabled(bus)
-    assert j._session_logger is None  # off by default
+    assert j.attach_if_enabled(bus) is None  # off by default
 
-    p = tmp_path / "log.jsonl"
-    monkeypatch.setenv("OPENMATE_LOG", str(p))  # a path value logs there
-    j.attach_if_enabled(bus)
+    monkeypatch.setenv("OPENMATE_LOG", "1")  # truthy -> logger attached
+    logger = j.attach_if_enabled(bus)
+    assert logger is not None
     bus.emit(
         ModelResponded(
             "t", 0, 0.0,
@@ -89,7 +89,75 @@ def test_attach_if_enabled_is_gated_by_env(tmp_path, monkeypatch):
             1.0,
         )
     )
-    assert p.exists() and "ModelResponded" in p.read_text(encoding="utf-8")
+    logger.close()
+    j._singleton = None  # don't leak into other tests
+    # The event landed in t.jsonl under the default log dir.
+    written = (j.DEFAULT_LOG_DIR / "t.jsonl")
+    assert written.is_file() and "ModelResponded" in written.read_text(encoding="utf-8")
+    written.unlink()
 
-    j._session_logger.close()
-    j._session_logger = None  # don't leak into other tests
+
+def test_force_attach_writes_per_thread_files(tmp_path, monkeypatch):
+    """force_attach() (used by the UI server) always attaches a per-thread logger,
+    even without OPENMATE_LOG. Setting OPENMATE_LOG=0 is the explicit opt-out."""
+    import openmate.adapters.tracers.jsonl as j
+
+    j._singleton = None
+    j._attached_buses.clear()
+    monkeypatch.delenv("OPENMATE_LOG", raising=False)
+    bus = EventBus()
+    logger = j.force_attach(bus, log_dir=tmp_path)
+    assert logger is not None
+    bus.emit(
+        ModelRequested(
+            "thr-A", 0, 0.0,
+            ModelRequest(messages=[Message("user", [TextPart("hi")])], max_tokens=8),
+        )
+    )
+    bus.emit(
+        ModelResponded(
+            "thr-A", 0, 0.0,
+            ModelResponse(Message("assistant", [TextPart("hello")]), Usage(1, 1), finish_reason="stop"),
+            1.0,
+        )
+    )
+    bus.emit(
+        ModelResponded(
+            "thr-B", 0, 0.0,
+            ModelResponse(Message("assistant", [TextPart("other")]), Usage(1, 1), finish_reason="stop"),
+            1.0,
+        )
+    )
+    logger.close()
+    a = (tmp_path / "thr-A.jsonl").read_text(encoding="utf-8")
+    b = (tmp_path / "thr-B.jsonl").read_text(encoding="utf-8")
+    assert "ModelRequested" in a and "ModelResponded" in a
+    assert "ModelResponded" in b and "ModelRequested" not in b
+
+    j._singleton = None
+    j._attached_buses.clear()
+
+
+def test_list_log_files_returns_per_thread(tmp_path):
+    import openmate.adapters.tracers.jsonl as j
+
+    j.DEFAULT_LOG_DIR = tmp_path
+    (tmp_path / "alpha.jsonl").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "beta.jsonl").write_text("{}\n", encoding="utf-8")
+    files = j.list_log_files()
+    assert {f["thread_id"] for f in files} == {"alpha", "beta"}
+    assert all(f["path"].endswith(".jsonl") for f in files)
+
+
+def test_explicit_optout_blocks_force_attach(monkeypatch):
+    """Setting OPENMATE_LOG=0 is the escape hatch — even force_attach refuses."""
+    import openmate.adapters.tracers.jsonl as j
+
+    j._singleton = None
+    j._attached_buses.clear()
+    monkeypatch.setenv("OPENMATE_LOG", "0")
+    bus = EventBus()
+    assert j.force_attach(bus) is None
+    assert j.attach_if_enabled(bus) is None
+    j._singleton = None
+    j._attached_buses.clear()

@@ -34,7 +34,8 @@ class MessageAdded(Event):
 
 @dataclass
 class ModelRequested(Event):
-    request: "ModelRequest"  # the full payload sent to the model — not just counts
+    request: "ModelRequest"  # the OpenMate-side request (messages, tools, …)
+    wire: dict | None = None  # the provider's literal HTTP kwargs, when known
 
     @property
     def n_messages(self) -> int:

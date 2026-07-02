@@ -16,6 +16,7 @@ environment at construction, never from prompts or state.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, AsyncIterator
 
@@ -114,7 +115,7 @@ class AnthropicModel:
         except Exception as e:  # noqa: BLE001 — normalize provider errors
             raise ProviderError(f"{type(e).__name__}: {e}") from e
 
-        return self._response_from_wire(raw)
+        return self._response_from_wire(raw, wire=kwargs)
 
     async def stream(self, req: ModelRequest) -> AsyncIterator[StreamDelta]:
         """Token-level streaming over the same Messages API (``stream=True`` / SSE).
@@ -154,7 +155,7 @@ class AnthropicModel:
         except Exception as e:  # noqa: BLE001 — normalize provider errors
             raise ProviderError(f"{type(e).__name__}: {e}") from e
 
-        yield StreamDelta("done", self._response_from_wire(final))
+        yield StreamDelta("done", self._response_from_wire(final, wire=kwargs))
 
     # --- translation layer -----------------------------------------------------
     def _messages_to_wire(self, messages: list[Message]) -> tuple[str, list[dict]]:
@@ -215,7 +216,7 @@ class AnthropicModel:
             "input_schema": spec.parameters,
         }
 
-    def _response_from_wire(self, raw: Any) -> ModelResponse:
+    def _response_from_wire(self, raw: Any, *, wire: dict | None = None) -> ModelResponse:
         parts: list[Any] = []
         for block in getattr(raw, "content", []) or []:
             btype = getattr(block, "type", None)
@@ -248,9 +249,22 @@ class AnthropicModel:
         if any(isinstance(p, ToolCallPart) for p in parts):
             finish = "tool_calls"
 
+        # Stash the wire kwargs on the response object so the loop can attach
+        # them to the previous ModelRequested event (one wire dict per call).
+        if wire is not None:
+            try:
+                raw._openmate_wire = _jsonable(wire)
+            except Exception:  # noqa: BLE001
+                pass
+
         return ModelResponse(
             message=Message("assistant", parts),
             usage=usage,
             finish_reason=finish,  # type: ignore[arg-type]
             raw=raw,
         )
+
+
+def _jsonable(obj: Any) -> Any:
+    """Best-effort conversion to JSON-serializable form for wire kwargs."""
+    return json.loads(json.dumps(obj, default=str))

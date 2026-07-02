@@ -13,6 +13,7 @@
         <button type="button" class="section-tab active" data-section="tasks">Tasks</button>
         <button type="button" class="section-tab" data-section="libraries">Libraries</button>
         <button type="button" class="section-tab" data-section="projects">Projects</button>
+        <button type="button" class="section-tab" data-section="logs">Logs</button>
       </div>
       <button id="new-btn" class="new-task-btn">+ New task</button>
       <div id="nav-list" class="nav-list"></div>
@@ -44,6 +45,14 @@
       <!-- Project editor screen -->
       <section id="screen-project" class="screen hidden">
         <div id="project-view" class="entity-view"></div>
+      </section>
+
+      <!-- Logs screen: left-list of threads, right-pane timeline of events -->
+      <section id="screen-logs" class="screen hidden">
+        <div class="logs-shell">
+          <div id="logs-list" class="logs-list"></div>
+          <div id="logs-view" class="logs-view"></div>
+        </div>
       </section>
     </main>
   </div>

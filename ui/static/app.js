@@ -12,11 +12,14 @@ const newBtn = document.getElementById("new-btn");
 const taskAttachEl = document.getElementById("task-attach");
 const libraryViewEl = document.getElementById("library-view");
 const projectViewEl = document.getElementById("project-view");
+const logsListEl = document.getElementById("logs-list");
+const logsViewEl = document.getElementById("logs-view");
 const sectionTabs = [...document.querySelectorAll(".section-tab")];
 const screens = {
   task: document.getElementById("screen-task"),
   library: document.getElementById("screen-library"),
   project: document.getElementById("screen-project"),
+  logs: document.getElementById("screen-logs"),
 };
 const modalOverlay = document.getElementById("modal-overlay");
 const modalTitle = document.getElementById("modal-title");
@@ -29,10 +32,12 @@ const modalActions = document.querySelector(".modal-actions");
 const modalCancelBtn = document.getElementById("modal-cancel");
 const modalOkBtn = document.getElementById("modal-ok");
 
-let section = "tasks"; // left panel: tasks | libraries | projects
+let section = "tasks"; // left panel: tasks | libraries | projects | logs
 let threadId = null; // current task
 let activeLibraryId = null; // library open in the library screen
 let activeProjectId = null; // project open in the project screen
+let activeLogThreadId = null; // thread whose log is open in the logs screen
+let logPollTimer = null; // tail-polling for live log updates
 let es = null; // current EventSource, if a run is in flight
 let liveAssistantBubble = null;
 let liveCards = new Map();
@@ -161,14 +166,20 @@ function setSection(name) {
   section = name;
   sectionTabs.forEach((t) => t.classList.toggle("active", t.dataset.section === name));
   newBtn.textContent =
-    name === "tasks" ? "+ New task" : name === "libraries" ? "+ New library" : "+ New project";
+    name === "tasks" ? "+ New task" :
+    name === "libraries" ? "+ New library" :
+    name === "projects" ? "+ New project" :
+    "+ New task";  // logs section: hidden — only the nav list is useful there
+  newBtn.style.display = name === "logs" ? "none" : "";
+  if (name === "logs") stopLogPolling();
   loadNav();
 }
 
 async function loadNav() {
   if (section === "tasks") return loadTasksNav();
   if (section === "libraries") return loadLibrariesNav();
-  return loadProjectsNav();
+  if (section === "projects") return loadProjectsNav();
+  if (section === "logs") return loadLogsNav();
 }
 
 async function loadTasksNav() {
@@ -220,7 +231,7 @@ function navEmpty(text) {
 newBtn.addEventListener("click", () => {
   if (section === "tasks") newTask();
   else if (section === "libraries") newLibrary();
-  else newProject();
+  else if (section === "projects") newProject();
 });
 
 // --- tasks ----------------------------------------------------------------------
@@ -725,6 +736,336 @@ async function deleteProject(projectId) {
   showScreen("task");
   loadNav();
   if (threadId) renderTaskAttach();
+}
+
+// --- logs viewer: left list of threads, right pane of JSONL events --------------
+async function loadLogsNav() {
+  const res = await fetch("/api/logs");
+  const data = res.ok ? await res.json() : { threads: [], orphan_logs: [], log_dir: "" };
+  renderLogsList(data);
+  // If we had a thread open, refresh its view (it may have grown); otherwise
+  // show the placeholder pane.
+  if (activeLogThreadId) {
+    const exists = data.threads.some((t) => t.thread_id === activeLogThreadId)
+      || data.orphan_logs.some((o) => o.thread_id === activeLogThreadId);
+    if (exists) {
+      await openLogThread(activeLogThreadId);
+    } else {
+      activeLogThreadId = null;
+      renderLogEmpty();
+    }
+  } else {
+    renderLogEmpty();
+  }
+}
+
+function renderLogsList(data) {
+  logsListEl.innerHTML = "";
+  const header = document.createElement("div");
+  header.className = "logs-header";
+  header.textContent = data.log_dir ? `Logs · ${data.log_dir}` : "Logs";
+  logsListEl.appendChild(header);
+  const hasAny = data.threads.length || (data.orphan_logs && data.orphan_logs.length);
+  if (!hasAny) {
+    const e = document.createElement("div");
+    e.className = "nav-empty";
+    e.textContent = "No log files yet — run a task to create one.";
+    logsListEl.appendChild(e);
+    return;
+  }
+  for (const t of data.threads) {
+    const item = document.createElement("div");
+    item.className = "nav-item logs-nav-item" + (t.thread_id === activeLogThreadId ? " active" : "");
+    const sub = t.has_log ? "has log" : "no log";
+    item.innerHTML = `<div class="nav-name">${escapeHtml(t.title || "Untitled")}</div>
+      <div class="nav-sub">${escapeHtml(t.thread_id.slice(0, 12))} · ${sub}</div>`;
+    item.title = t.thread_id;
+    item.addEventListener("click", () => openLogThread(t.thread_id));
+    logsListEl.appendChild(item);
+  }
+  if (data.orphan_logs && data.orphan_logs.length) {
+    const orph = document.createElement("div");
+    orph.className = "logs-orphan-label";
+    orph.textContent = "Orphaned log files (no matching thread)";
+    logsListEl.appendChild(orph);
+    for (const o of data.orphan_logs) {
+      const item = document.createElement("div");
+      item.className = "nav-item logs-nav-item" + (o.thread_id === activeLogThreadId ? " active" : "");
+      item.innerHTML = `<div class="nav-name">${escapeHtml(o.thread_id)}</div>
+        <div class="nav-sub">${o.size} bytes · orphaned</div>`;
+      item.addEventListener("click", () => openLogThread(o.thread_id));
+      logsListEl.appendChild(item);
+    }
+  }
+}
+
+function renderLogEmpty() {
+  logsViewEl.innerHTML = `<div class="logs-empty">
+    <div class="empty-title">Run log viewer</div>
+    <div class="empty-sub">Select a thread on the left to see its JSONL run log.
+      Each run writes one file at <code>~/.openmate/logs/&lt;thread_id&gt;.jsonl</code>
+      capturing every agent↔model event — the full request payload, the wire
+      kwargs sent to the provider, the raw response, tool calls and results.</div>
+  </div>`;
+  stopLogPolling();
+}
+
+async function openLogThread(id) {
+  activeLogThreadId = id;
+  // Refresh the left list so the active highlight follows.
+  if (section === "logs") loadLogsNav();
+  await renderLogView(id, 0);
+  startLogPolling(id);
+}
+
+async function renderLogView(threadId, sinceOffset) {
+  const url = sinceOffset > 0
+    ? `/api/logs/${encodeURIComponent(threadId)}/tail?since=${sinceOffset}`
+    : `/api/logs/${encodeURIComponent(threadId)}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    logsViewEl.innerHTML = `<div class="logs-empty">
+      <div class="empty-title">No log for this thread</div>
+      <div class="empty-sub">${escapeHtml(((await res.json().catch(() => ({}))).error || res.statusText))}</div>
+    </div>`;
+    stopLogPolling();
+    return;
+  }
+  const data = await res.json();
+  if (sinceOffset === 0) {
+    // First paint: full view (header + timeline).
+    logsViewEl.innerHTML = "";
+    logsViewEl.appendChild(logHeader(data));
+    const tl = document.createElement("div");
+    tl.className = "log-timeline";
+    tl.dataset.offset = String(data.entries.length);
+    for (const entry of data.entries) tl.appendChild(renderLogEntry(entry));
+    logsViewEl.appendChild(tl);
+  } else {
+    // Append-only update: append new entries to the existing timeline.
+    const tl = logsViewEl.querySelector(".log-timeline");
+    if (!tl) return renderLogView(threadId, 0);
+    for (const entry of data.entries) tl.appendChild(renderLogEntry(entry));
+    tl.dataset.offset = String(Number(tl.dataset.offset || "0") + data.entries.length);
+  }
+  // Auto-scroll the timeline pane to the latest event.
+  const tl = logsViewEl.querySelector(".log-timeline");
+  if (tl) tl.scrollTop = tl.scrollHeight;
+}
+
+function logHeader(data) {
+  const head = document.createElement("div");
+  head.className = "logs-view-head";
+  const meta = document.createElement("div");
+  meta.className = "logs-view-meta";
+  meta.innerHTML = `<div class="logs-view-title">${escapeHtml(data.thread_id)}</div>
+    <div class="logs-view-sub">${data.n_entries} entries · ${formatBytes(data.size)} · ${data.path}</div>`;
+  head.appendChild(meta);
+  const actions = document.createElement("div");
+  actions.className = "entity-actions";
+  const refreshBtn = document.createElement("button");
+  refreshBtn.type = "button";
+  refreshBtn.className = "ent-btn";
+  refreshBtn.textContent = "Refresh";
+  refreshBtn.addEventListener("click", () => renderLogView(data.thread_id, 0));
+  actions.appendChild(refreshBtn);
+  head.appendChild(actions);
+  return head;
+}
+
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderLogEntry(entry) {
+  const ev = entry.event || entry._parse_error || "(unknown)";
+  const card = document.createElement("div");
+  card.className = `log-card log-${ev}`;
+
+  const head = document.createElement("div");
+  head.className = "log-head";
+  const stepTag = document.createElement("span");
+  stepTag.className = "log-step";
+  stepTag.textContent = `step ${entry.step ?? "-"}`;
+  const evTag = document.createElement("span");
+  evTag.className = "log-ev";
+  evTag.textContent = ev;
+  head.appendChild(stepTag);
+  head.appendChild(evTag);
+  if (entry.ms != null) {
+    const ms = document.createElement("span");
+    ms.className = "log-ms";
+    ms.textContent = `${Math.round(entry.ms)} ms`;
+    head.appendChild(ms);
+  }
+  card.appendChild(head);
+
+  const body = document.createElement("div");
+  body.className = "log-body";
+  body.appendChild(renderEntryBody(entry));
+  card.appendChild(body);
+  head.addEventListener("click", () => card.classList.toggle("open"));
+  card.classList.add("open");  // open by default — these are logs, you want to see them
+  return card;
+}
+
+function renderEntryBody(entry) {
+  const wrap = document.createElement("div");
+
+  if (entry._parse_error) {
+    const e = document.createElement("div");
+    e.className = "log-parse-error";
+    e.textContent = `line ${entry._line}: ${entry._parse_error}`;
+    wrap.appendChild(e);
+    const pre = document.createElement("pre");
+    pre.className = "log-pre";
+    pre.textContent = entry._raw || "";
+    wrap.appendChild(pre);
+    return wrap;
+  }
+
+  if (entry.event === "RunStarted") {
+    return wrap;  // no payload
+  }
+
+  if (entry.event === "ModelRequested") {
+    const req = entry.request || {};
+    wrap.appendChild(logSection("Prompt sent to model", prettyJSON(req.messages)));
+    if (req.wire) {
+      wrap.appendChild(logSection("Wire kwargs (HTTP body sent to provider)", prettyJSON(req.wire)));
+    }
+    if (req.tools && req.tools.length) {
+      wrap.appendChild(logSection(`Tools (${req.tools.length})`, prettyJSON(req.tools.map((t) => ({
+        name: t.name, description: t.description, parameters: t.parameters,
+      })))));
+    }
+    const meta = [];
+    if (req.temperature != null) meta.push(`temp=${req.temperature}`);
+    if (req.max_tokens != null) meta.push(`max_tokens=${req.max_tokens}`);
+    if (meta.length) wrap.appendChild(logSection("Request params", meta.join(" · ")));
+    return wrap;
+  }
+
+  if (entry.event === "ModelResponded") {
+    const msg = entry.message || {};
+    const summary = [];
+    if (entry.finish_reason) summary.push(`finish=${entry.finish_reason}`);
+    if (entry.usage) summary.push(`tokens in=${entry.usage.prompt_tokens} out=${entry.usage.completion_tokens}`);
+    if (summary.length) wrap.appendChild(logSection("Response", summary.join(" · ")));
+    const text = (msg.content || []).filter((p) => p.kind === "text").map((p) => p.text).join("\n");
+    const thinking = (msg.content || []).filter((p) => p.kind === "thinking").map((p) => p.text).join("\n");
+    const calls = msg.tool_calls || [];
+    if (text) wrap.appendChild(logSection("Assistant text", text));
+    if (thinking) wrap.appendChild(logSection("Thinking", thinking));
+    if (calls.length) wrap.appendChild(logSection("Tool calls", prettyJSON(calls)));
+    if (entry.raw) wrap.appendChild(logSection("Raw provider response", prettyJSON(entry.raw)));
+    return wrap;
+  }
+
+  if (entry.event === "MessageAdded") {
+    const m = entry.message || {};
+    const text = (m.content || []).filter((p) => p.kind === "text").map((p) => p.text).join("\n");
+    const calls = (m.content || []).filter((p) => p.kind === "tool_call");
+    const sub = [];
+    sub.push(`role=${m.role}`);
+    if (m.name) sub.push(`name=${m.name}`);
+    if (calls.length) sub.push(`${calls.length} tool call${calls.length === 1 ? "" : "s"}`);
+    wrap.appendChild(logSection("Message", sub.join(" · ")));
+    if (text) wrap.appendChild(logSection("Text", text));
+    if (calls.length) wrap.appendChild(logSection("Tool calls", prettyJSON(calls)));
+    return wrap;
+  }
+
+  if (entry.event === "ToolCallRequested") {
+    wrap.appendChild(logSection("Tool", entry.call && entry.call.name));
+    wrap.appendChild(logSection("Args", prettyJSON(entry.call && entry.call.args)));
+    wrap.appendChild(logSection("Call id", entry.call && entry.call.id));
+    return wrap;
+  }
+
+  if (entry.event === "ToolReturned") {
+    const r = entry.result || {};
+    const txt = (r.content || []).map((p) => p.text || prettyJSON(p)).join("\n");
+    wrap.appendChild(logSection(`Result${r.is_error ? " (error)" : ""}`, txt));
+    return wrap;
+  }
+
+  if (entry.event === "CheckpointSaved") {
+    wrap.appendChild(logSection("Revision", String(entry.rev)));
+    return wrap;
+  }
+
+  if (entry.event === "RunFinished") {
+    const r = entry.result || {};
+    const summary = [`status=${r.status}`, `reason=${r.reason}`, `steps=${r.steps}`];
+    wrap.appendChild(logSection("Run", summary.join(" · ")));
+    if (r.usage) wrap.appendChild(logSection("Usage", prettyJSON(r.usage)));
+    if (r.text) wrap.appendChild(logSection("Final answer", r.text));
+    return wrap;
+  }
+
+  // Unknown event: dump raw.
+  wrap.appendChild(logSection("Payload", prettyJSON(entry)));
+  return wrap;
+}
+
+function logSection(label, content) {
+  const sec = document.createElement("div");
+  sec.className = "log-section";
+  const lab = document.createElement("div");
+  lab.className = "log-section-label";
+  lab.textContent = label;
+  sec.appendChild(lab);
+  if (typeof content === "string") {
+    const pre = document.createElement("pre");
+    pre.className = "log-pre";
+    pre.textContent = content;
+    sec.appendChild(pre);
+  } else if (content instanceof Node) {
+    sec.appendChild(content);
+  } else {
+    const pre = document.createElement("pre");
+    pre.className = "log-pre";
+    pre.textContent = prettyJSON(content);
+    sec.appendChild(pre);
+  }
+  return sec;
+}
+
+function prettyJSON(obj) {
+  try {
+    return JSON.stringify(obj, null, 2);
+  } catch (e) {
+    return String(obj);
+  }
+}
+
+function startLogPolling(threadId) {
+  stopLogPolling();
+  // While a run is in flight, the file grows — poll every 2s for fresh entries.
+  // The viewer keeps the existing timeline; we only append.
+  logPollTimer = setInterval(async () => {
+    if (section !== "logs" || activeLogThreadId !== threadId) {
+      stopLogPolling();
+      return;
+    }
+    const tl = logsViewEl.querySelector(".log-timeline");
+    const offset = tl ? Number(tl.dataset.offset || "0") : 0;
+    try {
+      await renderLogView(threadId, offset);
+    } catch (e) {
+      // Polling errors are non-fatal — the next tick will retry.
+    }
+  }, 2000);
+}
+
+function stopLogPolling() {
+  if (logPollTimer) {
+    clearInterval(logPollTimer);
+    logPollTimer = null;
+  }
 }
 
 // --- small shared widgets -------------------------------------------------------

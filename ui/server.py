@@ -32,6 +32,12 @@ sys.path.insert(0, str(ROOT))
 
 from openmate.adapters.stores.sqlite import SQLiteStore  # noqa: E402
 from openmate.adapters.tools.builtin import all_tools  # noqa: E402
+from openmate.adapters.tracers.jsonl import (  # noqa: E402
+    DEFAULT_LOG_DIR,
+    default_log_path,
+    force_attach,
+    list_log_files,
+)
 from openmate.config import default_model, default_services  # noqa: E402
 from openmate.kernel.agent import Agent  # noqa: E402
 from openmate.kernel.events import (  # noqa: E402
@@ -98,6 +104,10 @@ class AppState:
 
     def build_agent(self, store: SQLiteStore, thread_id: str) -> Agent:
         services = default_services(store=store)
+        # The UI's Logs tab needs data, so always attach a per-thread JSONL
+        # logger to the bus (unless the user set OPENMATE_LOG=0 to opt out).
+        # The logger writes one file per thread to ~/.openmate/logs/.
+        force_attach(services.bus)
         # A task's file/shell roots = its attached project's directories plus any
         # task-local folders; the project's goals (if any) steer the agent. See docs/19.
         project = store.get_thread_project(thread_id)
@@ -683,6 +693,125 @@ async def delete_library(request: Request) -> JSONResponse:
     return JSONResponse({"deleted": library_id, "n_chunks": len(chunk_ids)})
 
 
+# --- logs: per-thread JSONL run log, one file per thread ------------------------
+def _read_log_entries(thread_id: str, *, limit: int | None = None) -> list[dict]:
+    """Parse one thread's JSONL log file into a list of event records.
+
+    Lines that fail to parse are returned as ``{"_parse_error": ..., "_raw": ...}``
+    so the viewer can show partial logs instead of nothing when a line is
+    malformed (e.g. a write was interrupted).
+    """
+    path = default_log_path(thread_id)
+    if not path.is_file():
+        return []
+    out: list[dict] = []
+    with path.open("r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                out.append({"_parse_error": str(e), "_line": i + 1, "_raw": line})
+            if limit is not None and len(out) >= limit:
+                break
+    return out
+
+
+async def list_logs(request: Request) -> JSONResponse:
+    """GET /api/logs — all thread log files on disk + a thread_id→has_log map.
+
+    The Threads list comes from SQLite (the canonical task index); the log
+    directory is the source of truth for "which threads have a log file". A
+    thread can exist without ever having produced a log (older sessions, or
+    runs that errored before the first event), and a log file can exist for
+    a thread whose state has been wiped. We report both so the UI shows the
+    truth on each side.
+    """
+    files = list_log_files()
+    log_threads = {f["thread_id"] for f in files}
+    store = STATE.new_store()
+    try:
+        threads = store.list_threads()
+    finally:
+        store.close()
+    thread_titles = {t["thread_id"]: t.get("title") or "Untitled" for t in threads}
+
+    # Threads in the log dir but not in sqlite (orphaned logs).
+    orphan_logs = [
+        {
+            "thread_id": f["thread_id"],
+            "size": f["size"],
+            "mtime": f["mtime"],
+        }
+        for f in files
+        if f["thread_id"] not in thread_titles
+    ]
+    # Threads in sqlite, with a `has_log` flag.
+    thread_rows = []
+    for t in threads:
+        thread_rows.append(
+            {
+                "thread_id": t["thread_id"],
+                "title": t.get("title") or "Untitled",
+                "updated_at": t.get("updated_at"),
+                "has_log": t["thread_id"] in log_threads,
+            }
+        )
+    # Sort: threads with logs first (newest updated_at), then without logs.
+    thread_rows.sort(key=lambda r: (not r["has_log"], -(r.get("updated_at") or 0)))
+    return JSONResponse(
+        {
+            "log_dir": str(DEFAULT_LOG_DIR),
+            "threads": thread_rows,
+            "orphan_logs": orphan_logs,
+        }
+    )
+
+
+async def get_thread_log(request: Request) -> JSONResponse:
+    """GET /api/logs/{thread_id} — parsed log records for one thread.
+
+    Returns 404 if no log file exists for that thread. The full event stream
+    — ModelRequested with merged wire kwargs, ModelResponded with raw payload,
+    tool calls, results, checkpoints — comes back as a JSON array.
+    """
+    thread_id = request.path_params["thread_id"]
+    path = default_log_path(thread_id)
+    if not path.is_file():
+        return JSONResponse({"error": "no log file for this thread"}, status_code=404)
+    try:
+        stat = path.stat()
+    except OSError as e:
+        return JSONResponse({"error": f"cannot stat log file: {e}"}, status_code=500)
+    entries = _read_log_entries(thread_id)
+    return JSONResponse(
+        {
+            "thread_id": thread_id,
+            "path": str(path),
+            "size": stat.st_size,
+            "mtime": stat.st_mtime,
+            "entries": entries,
+            "n_entries": len(entries),
+        }
+    )
+
+
+async def tail_thread_log(request: Request) -> JSONResponse:
+    """GET /api/logs/{thread_id}/tail?since=<n> — entries past offset ``n``.
+
+    Used by the UI to poll for new entries while a run is in flight, so the
+    log viewer updates live without re-fetching the whole file.
+    """
+    thread_id = request.path_params["thread_id"]
+    since = int(request.query_params.get("since", "0") or "0")
+    entries = _read_log_entries(thread_id)
+    return JSONResponse(
+        {"thread_id": thread_id, "entries": entries[since:], "next_offset": len(entries)}
+    )
+
+
 # --- folders: grant a thread's agent read/write access to an extra directory ---
 async def list_folders(request: Request) -> JSONResponse:
     thread_id = request.path_params["thread_id"]
@@ -775,6 +904,9 @@ def make_app(db_path: str, allow_write: bool, model_name: str | None) -> Starlet
         Route("/api/threads/{thread_id}/folders", list_folders, methods=["GET"]),
         Route("/api/threads/{thread_id}/folders", add_folder, methods=["POST"]),
         Route("/api/threads/{thread_id}/folders", remove_folder, methods=["DELETE"]),
+        Route("/api/logs", list_logs),
+        Route("/api/logs/{thread_id}/tail", tail_thread_log),
+        Route("/api/logs/{thread_id}", get_thread_log),
         Mount("/static", NoCacheStaticFiles(directory=STATIC_DIR), name="static"),
     ]
     return Starlette(routes=routes)
