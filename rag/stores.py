@@ -30,9 +30,23 @@ def _cosine(a: Vector, b: Vector) -> float:
 
 
 def _matches(metadata: dict, filters: dict | None) -> bool:
+    """Exact-equality matching, plus a tiny operator dialect (``$in``/``$eq``/``$ne``)
+    so the in-memory store honors the same filters Chroma does — e.g. scoping a
+    query to a set of libraries with ``{"library_id": {"$in": [...]}}``."""
     if not filters:
         return True
-    return all(metadata.get(k) == v for k, v in filters.items())
+    for key, cond in filters.items():
+        value = metadata.get(key)
+        if isinstance(cond, dict):
+            if "$in" in cond and value not in cond["$in"]:
+                return False
+            if "$eq" in cond and value != cond["$eq"]:
+                return False
+            if "$ne" in cond and value == cond["$ne"]:
+                return False
+        elif value != cond:
+            return False
+    return True
 
 
 class InMemoryVectorStore:
@@ -96,6 +110,9 @@ class InMemoryVectorStore:
             for i in ids:
                 self._records.pop(i, None)
         self._save()
+
+    async def get(self, ids: list[str]) -> list[VectorRecord]:
+        return [self._records[i] for i in ids if i in self._records]
 
 
 class ChromaVectorStore:
@@ -162,3 +179,14 @@ class ChromaVectorStore:
                 self._collection.delete(ids=existing)
         else:
             self._collection.delete(ids=ids)
+
+    async def get(self, ids: list[str]) -> list[VectorRecord]:
+        if not ids:
+            return []
+        res = self._collection.get(ids=ids, include=["embeddings", "documents", "metadatas"])
+        out: list[VectorRecord] = []
+        for id_, emb, text, meta in zip(
+            res["ids"], res["embeddings"], res["documents"], res["metadatas"]
+        ):
+            out.append(VectorRecord(id=id_, vector=list(emb), text=text, metadata=meta or {}))
+        return out

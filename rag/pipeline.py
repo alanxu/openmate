@@ -33,15 +33,22 @@ class NaivePipeline:
         self.store = store
         self.batch_size = batch_size
 
-    async def ingest(self, src: str, *, extra_metadata: dict | None = None) -> IngestReport:
+    async def ingest(
+        self, src: str, *, extra_metadata: dict | None = None, id_prefix: str = ""
+    ) -> IngestReport:
         """Load → chunk → embed → upsert.
 
         ``extra_metadata`` is merged into every loaded document's metadata
         *before* chunking, so it propagates into every chunk and (via the chunker's
         ``{**doc.metadata, ...}``) every upserted record. This is how callers scope
-        a corpus — e.g. ``{"thread_id": tid}`` so a later ``retrieve(..., filters=...)``
-        only sees that thread's knowledge — without any change to the Loader/Chunker/
+        a corpus — e.g. ``{"library_id": lib}`` so a later ``retrieve(..., filters=...)``
+        only sees that library's knowledge — without any change to the Loader/Chunker/
         VectorStore ports themselves.
+
+        ``id_prefix`` is prepended to every chunk id (and to ``report.chunk_ids``).
+        Chunk ids are otherwise path-derived (``{doc_id}#{i}``), so the same source
+        ingested into two scopes would collide; prefixing with e.g. ``f"{library_id}:"``
+        keeps each scope's copies distinct while preserving per-scope idempotency.
         """
         report = IngestReport()
         batch: list = []  # list[Chunk]
@@ -53,7 +60,7 @@ class NaivePipeline:
             vectors = await self.embedder.embed([c.text for c in batch])
             await self.store.upsert(
                 [
-                    VectorRecord(id=c.id, vector=v, text=c.text, metadata=c.metadata)
+                    VectorRecord(id=id_prefix + c.id, vector=v, text=c.text, metadata=c.metadata)
                     for c, v in zip(batch, vectors)
                 ]
             )
@@ -66,7 +73,7 @@ class NaivePipeline:
             report.sources.append(doc.id)
             for chunk in self.chunker.split(doc):
                 report.chunks += 1
-                chunk_ids.append(chunk.id)
+                chunk_ids.append(id_prefix + chunk.id)
                 batch.append(chunk)
                 if len(batch) >= self.batch_size:
                     await flush()

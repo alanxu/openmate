@@ -78,10 +78,11 @@ class AppState:
         self.allow_write = allow_write
         self.model_name = model_name
 
-        # One shared embedder/vector-store/retriever for the whole server. Every
-        # thread's knowledge lives in the same collection, isolated only by the
-        # `thread_id` metadata tag — see rag/tools.py:RetrieveTool.scope_to_thread
-        # and rag/pipeline.py:NaivePipeline.ingest's `extra_metadata`.
+        # One shared embedder/vector-store/retriever for the whole server. All
+        # knowledge lives in the same collection, isolated by the `library_id`
+        # metadata tag — a thread's private KB is the library whose id == thread_id,
+        # plus any shared libraries it attaches. See rag/tools.py:RetrieveTool and
+        # rag/pipeline.py:NaivePipeline.ingest's `extra_metadata`/`id_prefix`.
         self.embedder = build_embedder()
         self.vector_store = build_store()
         self.retriever = build_retriever(self.embedder, self.vector_store)
@@ -97,19 +98,33 @@ class AppState:
 
     def build_agent(self, store: SQLiteStore, thread_id: str) -> Agent:
         services = default_services(store=store)
-        extra_roots = store.list_folders(thread_id)
+        # A task's file/shell roots = its attached project's directories plus any
+        # task-local folders; the project's goals (if any) steer the agent. See docs/19.
+        project = store.get_thread_project(thread_id)
+        proj_dirs = project["directories"] if project else []
+        extra_roots = list(dict.fromkeys([*proj_dirs, *store.list_folders(thread_id)]))
+        # A task retrieves across the libraries it has selected (attached). There is
+        # no implicit per-thread library — knowledge lives only in libraries you
+        # create and then attach. Empty selection → the sentinel matches nothing.
+        lib_ids = [lib["library_id"] for lib in store.list_thread_libraries(thread_id)]
+        retrieve = RetrieveTool(
+            self.retriever,
+            base_filters={"library_id": {"$in": lib_ids or ["__none__"]}},
+            scope_to_thread=False,
+        )
+        instructions = DEFAULT_INSTRUCTIONS
+        if project and project["goals"].strip():
+            instructions += "\n\nProject goals for this task (keep them in mind):\n" + project["goals"].strip()
         # The chat UI always gets write + shell by default (this is a local
-        # single-user assistant, not a multi-tenant service), scoped to the
-        # server's cwd plus whatever folders this thread has added via the '+'
-        # menu — see openmate/adapters/tools/builtin.py:make_shell_tool's
-        # docstring for the (cwd-only) confinement caveat. ``self.allow_write``
-        # is no longer load-bearing here but is kept on AppState/CLI for
-        # backward compatibility with anything else constructing it.
-        tools = [*all_tools(extra_roots), RetrieveTool(self.retriever)]
+        # single-user assistant, not a multi-tenant service), scoped to the server's
+        # cwd plus the task's project directories and any task-local folders — see
+        # openmate/adapters/tools/builtin.py:make_shell_tool's docstring for the
+        # (cwd-only) confinement caveat.
+        tools = [*all_tools(extra_roots), retrieve]
         return Agent(
             name="openmate",
             model=default_model(self.model_name),
-            instructions=DEFAULT_INSTRUCTIONS,
+            instructions=instructions,
             services=services,
             tools=tools,
             max_steps=12,
@@ -290,7 +305,49 @@ async def chat_stream(request: Request) -> EventSourceResponse:
     return EventSourceResponse(gen())
 
 
-# --- knowledge: ingest into the shared RAG store, tagged with thread_id --------
+# --- knowledge & libraries: ingest into the shared RAG store, tagged library_id -
+async def _materialize(request: Request, dest_dir: Path) -> "tuple[str, Path]":
+    """Write an uploaded file or pasted text into ``dest_dir``; return (label, path).
+    Raises ValueError on bad input (handlers turn it into a 400)."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    if "multipart/form-data" in request.headers.get("content-type", ""):
+        form = await request.form()
+        upload = form.get("file")
+        if upload is None or not hasattr(upload, "read"):
+            raise ValueError("missing 'file' in form data")
+        label = upload.filename or f"upload-{uuid.uuid4().hex[:8]}.txt"
+        path = dest_dir / label
+        path.write_bytes(await upload.read())
+        return label, path
+    body = await request.json()
+    text = (body or {}).get("text")
+    if not text or not text.strip():
+        raise ValueError("missing 'text' (or upload a 'file')")
+    label = (body or {}).get("name") or f"pasted-{uuid.uuid4().hex[:8]}.txt"
+    if not label.endswith((".txt", ".md")):
+        label += ".txt"
+    path = dest_dir / label
+    path.write_text(text, encoding="utf-8")
+    return label, path
+
+
+async def _ingest_into_library(store: SQLiteStore, library_id: str, label: str, path: Path) -> int:
+    """Ingest one source into a library: tag chunks with library_id, namespace their
+    ids by library (so the same source can live in several libraries), and record the
+    id-set for precise removal. Returns the chunk count."""
+    report = await STATE.pipeline.ingest(
+        str(path),
+        extra_metadata={"library_id": library_id},
+        id_prefix=f"{library_id}:",
+    )
+    store.add_library_source(library_id, label, report.chunk_ids)
+    return len(report.chunk_ids)
+
+
+def _sources_json(items: list) -> list:
+    return [{"source": i["source"], "added_at": i["added_at"], "n_chunks": len(i["chunk_ids"])} for i in items]
+
+
 async def list_knowledge(request: Request) -> JSONResponse:
     thread_id = request.path_params["thread_id"]
     store = STATE.new_store()
@@ -298,48 +355,23 @@ async def list_knowledge(request: Request) -> JSONResponse:
         items = store.list_knowledge(thread_id)
     finally:
         store.close()
-    return JSONResponse(
-        [{"source": i["source"], "added_at": i["added_at"], "n_chunks": len(i["chunk_ids"])} for i in items]
-    )
+    return JSONResponse(_sources_json(items))
 
 
 async def add_knowledge(request: Request) -> JSONResponse:
+    """POST /api/threads/{id}/knowledge — add to this thread's private library."""
     thread_id = request.path_params["thread_id"]
-    content_type = request.headers.get("content-type", "")
-
-    label: str
-    path: Path
-    if "multipart/form-data" in content_type:
-        form = await request.form()
-        upload = form.get("file")
-        if upload is None or not hasattr(upload, "read"):
-            return JSONResponse({"error": "missing 'file' in form data"}, status_code=400)
-        label = upload.filename or f"upload-{uuid.uuid4().hex[:8]}.txt"
-        dest_dir = STATE.uploads_dir / thread_id
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        path = dest_dir / label
-        data = await upload.read()
-        path.write_bytes(data)
-    else:
-        body = await request.json()
-        text = (body or {}).get("text")
-        if not text or not text.strip():
-            return JSONResponse({"error": "missing 'text' (or upload a 'file')"}, status_code=400)
-        label = (body or {}).get("name") or f"pasted-{uuid.uuid4().hex[:8]}.txt"
-        if not label.endswith((".txt", ".md")):
-            label += ".txt"
-        dest_dir = STATE.uploads_dir / thread_id
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        path = dest_dir / label
-        path.write_text(text, encoding="utf-8")
-
-    report = await STATE.pipeline.ingest(str(path), extra_metadata={"thread_id": thread_id})
     store = STATE.new_store()
     try:
-        store.add_knowledge(thread_id, label, report.chunk_ids)
+        store.ensure_private_library(thread_id, embedder=STATE.embedder.name, dim=STATE.embedder.dim)
+        try:
+            label, path = await _materialize(request, STATE.uploads_dir / thread_id)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        n = await _ingest_into_library(store, thread_id, label, path)
     finally:
         store.close()
-    return JSONResponse({"source": label, "n_chunks": len(report.chunk_ids)})
+    return JSONResponse({"source": label, "n_chunks": n})
 
 
 async def remove_knowledge(request: Request) -> JSONResponse:
@@ -355,6 +387,300 @@ async def remove_knowledge(request: Request) -> JSONResponse:
     if chunk_ids:
         await STATE.vector_store.delete(ids=chunk_ids)
     return JSONResponse({"removed": source, "n_chunks": len(chunk_ids)})
+
+
+# --- libraries: create / list, ingest into, attach to threads ------------------
+async def list_libraries(request: Request) -> JSONResponse:
+    store = STATE.new_store()
+    try:
+        return JSONResponse(store.list_libraries())
+    finally:
+        store.close()
+
+
+async def create_library(request: Request) -> JSONResponse:
+    body = await request.json()
+    name = ((body or {}).get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "missing 'name'"}, status_code=400)
+    library_id = "lib_" + uuid.uuid4().hex[:12]
+    store = STATE.new_store()
+    try:
+        lib = store.create_library(
+            library_id, name, kind="shared",
+            embedder=STATE.embedder.name, dim=STATE.embedder.dim,
+        )
+    finally:
+        store.close()
+    return JSONResponse(lib)
+
+
+async def list_library_knowledge(request: Request) -> JSONResponse:
+    library_id = request.path_params["library_id"]
+    store = STATE.new_store()
+    try:
+        items = store.list_library_sources(library_id)
+    finally:
+        store.close()
+    return JSONResponse(_sources_json(items))
+
+
+async def add_library_knowledge(request: Request) -> JSONResponse:
+    """Add knowledge to a library from a server-side folder/file path (JSON {path} —
+    a directory ingests every text file under it), pasted text (JSON {text}), or an
+    uploaded file (multipart)."""
+    library_id = request.path_params["library_id"]
+    store = STATE.new_store()
+    try:
+        if store.get_library(library_id) is None:
+            return JSONResponse({"error": f"no such library: {library_id}"}, status_code=404)
+        if "multipart/form-data" not in request.headers.get("content-type", ""):
+            body = await request.json()
+            raw_path = (body or {}).get("path")
+            if raw_path:
+                p = Path(raw_path).expanduser().resolve()
+                if not p.exists():
+                    return JSONResponse({"error": f"no such path: {p}"}, status_code=400)
+                label = (body or {}).get("name") or p.name
+                n = await _ingest_into_library(store, library_id, label, p)
+                return JSONResponse({"source": label, "n_chunks": n})
+            text = (body or {}).get("text")
+            if not text or not text.strip():
+                return JSONResponse({"error": "provide 'path', 'text', or upload a file"}, status_code=400)
+            dest = STATE.uploads_dir / library_id
+            dest.mkdir(parents=True, exist_ok=True)
+            label = (body or {}).get("name") or f"pasted-{uuid.uuid4().hex[:8]}.txt"
+            if not label.endswith((".txt", ".md")):
+                label += ".txt"
+            fp = dest / label
+            fp.write_text(text, encoding="utf-8")
+            n = await _ingest_into_library(store, library_id, label, fp)
+            return JSONResponse({"source": label, "n_chunks": n})
+        try:
+            label, path = await _materialize(request, STATE.uploads_dir / library_id)
+        except ValueError as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        n = await _ingest_into_library(store, library_id, label, path)
+        return JSONResponse({"source": label, "n_chunks": n})
+    finally:
+        store.close()
+
+
+async def remove_library_knowledge(request: Request) -> JSONResponse:
+    library_id = request.path_params["library_id"]
+    source = request.query_params.get("source")
+    if not source:
+        return JSONResponse({"error": "source query param is required"}, status_code=400)
+    store = STATE.new_store()
+    try:
+        chunk_ids = store.remove_library_source(library_id, source)
+    finally:
+        store.close()
+    if chunk_ids:
+        await STATE.vector_store.delete(ids=chunk_ids)
+    return JSONResponse({"removed": source, "n_chunks": len(chunk_ids)})
+
+
+async def list_thread_libraries(request: Request) -> JSONResponse:
+    thread_id = request.path_params["thread_id"]
+    store = STATE.new_store()
+    try:
+        libs = store.list_thread_libraries(thread_id)
+    finally:
+        store.close()
+    return JSONResponse(libs)
+
+
+async def attach_thread_library(request: Request) -> JSONResponse:
+    thread_id = request.path_params["thread_id"]
+    body = await request.json()
+    library_id = (body or {}).get("library_id")
+    if not library_id:
+        return JSONResponse({"error": "missing 'library_id'"}, status_code=400)
+    store = STATE.new_store()
+    try:
+        lib = store.get_library(library_id)
+        if lib is None:
+            return JSONResponse({"error": f"no such library: {library_id}"}, status_code=404)
+        if lib["embedder"] and lib["embedder"] != STATE.embedder.name:
+            return JSONResponse(
+                {"error": f"embedder mismatch: library uses {lib['embedder']}, "
+                          f"server uses {STATE.embedder.name}"},
+                status_code=409,
+            )
+        store.attach_library(thread_id, library_id)
+    finally:
+        store.close()
+    return JSONResponse({"attached": library_id})
+
+
+async def detach_thread_library(request: Request) -> JSONResponse:
+    thread_id = request.path_params["thread_id"]
+    library_id = request.query_params.get("library_id")
+    if not library_id:
+        return JSONResponse({"error": "library_id query param is required"}, status_code=400)
+    if library_id == thread_id:
+        return JSONResponse({"error": "cannot detach the thread's own (private) library"}, status_code=400)
+    store = STATE.new_store()
+    try:
+        store.detach_library(thread_id, library_id)
+    finally:
+        store.close()
+    return JSONResponse({"detached": library_id})
+
+
+# --- projects: work directories + goals, attached to a task --------------------
+async def list_projects(request: Request) -> JSONResponse:
+    store = STATE.new_store()
+    try:
+        return JSONResponse(store.list_projects())
+    finally:
+        store.close()
+
+
+async def create_project(request: Request) -> JSONResponse:
+    body = await request.json()
+    name = ((body or {}).get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "missing 'name'"}, status_code=400)
+    project_id = "proj_" + uuid.uuid4().hex[:12]
+    store = STATE.new_store()
+    try:
+        proj = store.create_project(project_id, name, goals=(body or {}).get("goals", ""))
+    finally:
+        store.close()
+    return JSONResponse(proj)
+
+
+async def get_project(request: Request) -> JSONResponse:
+    project_id = request.path_params["project_id"]
+    store = STATE.new_store()
+    try:
+        proj = store.get_project(project_id)
+        if proj is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        proj["tasks"] = store.list_project_threads(project_id)
+    finally:
+        store.close()
+    return JSONResponse(proj)
+
+
+async def update_project(request: Request) -> JSONResponse:
+    project_id = request.path_params["project_id"]
+    body = await request.json()
+    store = STATE.new_store()
+    try:
+        if store.get_project(project_id) is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        proj = store.update_project(project_id, name=(body or {}).get("name"), goals=(body or {}).get("goals"))
+    finally:
+        store.close()
+    return JSONResponse(proj)
+
+
+async def delete_project(request: Request) -> JSONResponse:
+    project_id = request.path_params["project_id"]
+    store = STATE.new_store()
+    try:
+        store.delete_project(project_id)
+    finally:
+        store.close()
+    return JSONResponse({"deleted": project_id})
+
+
+async def list_project_directories(request: Request) -> JSONResponse:
+    project_id = request.path_params["project_id"]
+    store = STATE.new_store()
+    try:
+        return JSONResponse(store.list_project_directories(project_id))
+    finally:
+        store.close()
+
+
+async def add_project_directory(request: Request) -> JSONResponse:
+    project_id = request.path_params["project_id"]
+    body = await request.json()
+    raw = (body or {}).get("path")
+    if not raw:
+        return JSONResponse({"error": "missing 'path'"}, status_code=400)
+    resolved = Path(raw).expanduser().resolve()
+    if not resolved.is_dir():
+        return JSONResponse({"error": f"not a directory: {resolved}"}, status_code=400)
+    store = STATE.new_store()
+    try:
+        store.add_project_directory(project_id, str(resolved))
+    finally:
+        store.close()
+    return JSONResponse({"path": str(resolved)})
+
+
+async def remove_project_directory(request: Request) -> JSONResponse:
+    project_id = request.path_params["project_id"]
+    path = request.query_params.get("path")
+    if not path:
+        return JSONResponse({"error": "path query param is required"}, status_code=400)
+    store = STATE.new_store()
+    try:
+        store.remove_project_directory(project_id, path)
+    finally:
+        store.close()
+    return JSONResponse({"removed": path})
+
+
+# --- task ↔ project attachment + library rename/delete -------------------------
+async def update_thread(request: Request) -> JSONResponse:
+    """PATCH /api/threads/{id} — attach the task to a project (project_id=null detaches)."""
+    thread_id = request.path_params["thread_id"]
+    body = await request.json()
+    if not body or "project_id" not in body:
+        return JSONResponse({"error": "missing 'project_id' (use null to detach)"}, status_code=400)
+    project_id = body.get("project_id")
+    store = STATE.new_store()
+    try:
+        if project_id and store.get_project(project_id) is None:
+            return JSONResponse({"error": f"no such project: {project_id}"}, status_code=404)
+        store.set_thread_project(thread_id, project_id)
+    finally:
+        store.close()
+    return JSONResponse({"thread_id": thread_id, "project_id": project_id})
+
+
+async def get_thread_project(request: Request) -> JSONResponse:
+    thread_id = request.path_params["thread_id"]
+    store = STATE.new_store()
+    try:
+        return JSONResponse(store.get_thread_project(thread_id))
+    finally:
+        store.close()
+
+
+async def update_library(request: Request) -> JSONResponse:
+    library_id = request.path_params["library_id"]
+    body = await request.json()
+    name = ((body or {}).get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "missing 'name'"}, status_code=400)
+    store = STATE.new_store()
+    try:
+        if store.get_library(library_id) is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        store.rename_library(library_id, name)
+        lib = store.get_library(library_id)
+    finally:
+        store.close()
+    return JSONResponse(lib)
+
+
+async def delete_library(request: Request) -> JSONResponse:
+    library_id = request.path_params["library_id"]
+    store = STATE.new_store()
+    try:
+        chunk_ids = store.delete_library(library_id)
+    finally:
+        store.close()
+    if chunk_ids:
+        await STATE.vector_store.delete(ids=chunk_ids)
+    return JSONResponse({"deleted": library_id, "n_chunks": len(chunk_ids)})
 
 
 # --- folders: grant a thread's agent read/write access to an extra directory ---
@@ -426,6 +752,26 @@ def make_app(db_path: str, allow_write: bool, model_name: str | None) -> Starlet
         Route("/api/threads/{thread_id}/knowledge", list_knowledge, methods=["GET"]),
         Route("/api/threads/{thread_id}/knowledge", add_knowledge, methods=["POST"]),
         Route("/api/threads/{thread_id}/knowledge", remove_knowledge, methods=["DELETE"]),
+        Route("/api/libraries", list_libraries, methods=["GET"]),
+        Route("/api/libraries", create_library, methods=["POST"]),
+        Route("/api/libraries/{library_id}/knowledge", list_library_knowledge, methods=["GET"]),
+        Route("/api/libraries/{library_id}/knowledge", add_library_knowledge, methods=["POST"]),
+        Route("/api/libraries/{library_id}/knowledge", remove_library_knowledge, methods=["DELETE"]),
+        Route("/api/threads/{thread_id}/libraries", list_thread_libraries, methods=["GET"]),
+        Route("/api/threads/{thread_id}/libraries", attach_thread_library, methods=["POST"]),
+        Route("/api/threads/{thread_id}/libraries", detach_thread_library, methods=["DELETE"]),
+        Route("/api/threads/{thread_id}", update_thread, methods=["PATCH"]),
+        Route("/api/threads/{thread_id}/project", get_thread_project, methods=["GET"]),
+        Route("/api/libraries/{library_id}", update_library, methods=["PATCH"]),
+        Route("/api/libraries/{library_id}", delete_library, methods=["DELETE"]),
+        Route("/api/projects", list_projects, methods=["GET"]),
+        Route("/api/projects", create_project, methods=["POST"]),
+        Route("/api/projects/{project_id}", get_project, methods=["GET"]),
+        Route("/api/projects/{project_id}", update_project, methods=["PATCH"]),
+        Route("/api/projects/{project_id}", delete_project, methods=["DELETE"]),
+        Route("/api/projects/{project_id}/directories", list_project_directories, methods=["GET"]),
+        Route("/api/projects/{project_id}/directories", add_project_directory, methods=["POST"]),
+        Route("/api/projects/{project_id}/directories", remove_project_directory, methods=["DELETE"]),
         Route("/api/threads/{thread_id}/folders", list_folders, methods=["GET"]),
         Route("/api/threads/{thread_id}/folders", add_folder, methods=["POST"]),
         Route("/api/threads/{thread_id}/folders", remove_folder, methods=["DELETE"]),

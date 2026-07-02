@@ -316,3 +316,121 @@ html, body { margin: 0; height: 100%; font-family: var(--sans); color: var(--tex
 .modal-btn-secondary:hover { background: var(--border); }
 .modal-btn-primary { background: var(--accent); color: white; }
 .modal-btn-primary:hover { opacity: 0.92; }
+
+/* --- library bar: active knowledge library + actions menu --- */
+.library-bar { display: flex; gap: 6px; margin-bottom: 8px; }
+.library-select {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 12.5px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+.library-select:focus { outline: 1.5px solid var(--accent); }
+.library-menu-wrap { position: relative; flex-shrink: 0; }
+.library-menu-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.library-menu-btn:hover { background: var(--hover); }
+.library-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  min-width: 210px;
+  z-index: 20;
+}
+.library-menu-item {
+  background: none;
+  border: none;
+  color: var(--text);
+  text-align: left;
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.library-menu-item:hover { background: var(--hover); }
+
+/* --- workspace: left-panel sections + center screens (docs/19) --- */
+.section-switch { display: flex; gap: 2px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 9px; padding: 3px; }
+.section-tab { flex: 1; background: none; border: none; color: var(--text-dim); font-size: 12px; font-weight: 600; padding: 6px 4px; border-radius: 6px; cursor: pointer; }
+.section-tab.active { background: var(--accent-dim); color: var(--accent); }
+.section-tab:hover:not(.active) { color: var(--text); }
+
+.nav-list { overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 2px; margin-top: 12px; }
+.nav-item { padding: 8px 10px; border-radius: 7px; cursor: pointer; }
+.nav-item:hover { background: var(--hover); }
+.nav-item.active { background: var(--accent-dim); }
+.nav-item.active .nav-name { color: var(--accent); font-weight: 600; }
+.nav-name { font-size: 13.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nav-sub { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
+.nav-empty { font-size: 12.5px; color: var(--text-dim); font-style: italic; padding: 8px 10px; }
+
+.screen { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.screen.hidden { display: none !important; }
+
+/* task attachment bar */
+.attach-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 18%; border-bottom: 1px solid var(--border); }
+@media (max-width: 900px) { .attach-bar { padding: 10px 6%; } }
+.attach-label { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+.attach-div { width: 1px; height: 16px; background: var(--border); }
+.attach-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 999px; padding: 3px 5px 3px 11px; font-size: 12.5px; }
+.attach-chip-name { cursor: pointer; color: var(--text); }
+.attach-chip-name:hover { color: var(--accent); }
+.attach-chip-x { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
+.attach-chip-x:hover { color: var(--error); }
+.attach-action { background: none; border: 1px dashed var(--border); color: var(--text-dim); border-radius: 999px; padding: 3px 11px; font-size: 12.5px; cursor: pointer; }
+.attach-action:hover { color: var(--accent); border-color: var(--accent-dim); }
+
+/* library / project editor screens */
+.entity-view { flex: 1; overflow-y: auto; padding: 24px 18%; display: flex; flex-direction: column; gap: 12px; }
+@media (max-width: 900px) { .entity-view { padding: 20px 6%; } }
+.entity-head { display: flex; flex-direction: column; gap: 6px; }
+.entity-title { font-size: 20px; font-weight: 600; color: var(--text); }
+.entity-meta { font-size: 12.5px; color: var(--text-dim); }
+.entity-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.entity-section-label { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 10px; }
+.ent-btn { background: var(--bg-card); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
+.ent-btn:hover { background: var(--hover); }
+.ent-btn-danger:hover { border-color: var(--error); color: var(--error); }
+.entity-list { display: flex; flex-direction: column; gap: 6px; }
+.row-item { display: flex; align-items: center; gap: 8px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+.row-name { flex: 1; word-break: break-all; color: var(--text); }
+.row-link { cursor: pointer; }
+.row-link:hover { color: var(--accent); }
+.row-meta { font-size: 12px; color: var(--text-dim); flex-shrink: 0; }
+.row-remove { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 15px; line-height: 1; flex-shrink: 0; }
+.row-remove:hover { color: var(--error); }
+.goals-field { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-family: var(--sans); font-size: 13.5px; padding: 10px; resize: vertical; }
+.goals-field:focus { outline: 1.5px solid var(--accent); }
+
+/* modal picker list */
+.modal-list { display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; margin-top: 4px; }
+.modal-list-item { background: var(--bg); border: 1px solid var(--border); color: var(--text); text-align: left; font-size: 13.5px; padding: 9px 11px; border-radius: 8px; cursor: pointer; }
+.modal-list-item:hover { background: var(--hover); border-color: var(--accent-dim); }
+
+/* multi-field create form (name + folder + goals) */
+.modal-form { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; }
+.form-field { display: flex; flex-direction: column; gap: 5px; }
+.form-label { font-size: 12.5px; color: var(--text-dim); }

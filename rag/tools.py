@@ -26,11 +26,12 @@ def format_documents(docs: list[Document]) -> str:
 class RetrieveTool:
     """``rag_search(query, k?)`` — retrieve the top-k chunks for a query.
 
-    ``scope_to_thread`` (default on) merges ``{"thread_id": ctx.state.thread_id}``
-    into every query's filters at call time, so one shared tool/retriever/vector
-    store instance naturally isolates each thread's ingested knowledge — no
-    per-thread retriever needed. Set it off for a deliberately shared/global
-    knowledge base, or pass a fixed ``base_filters`` for other static scoping.
+    ``base_filters`` are merged into every query — e.g. the UI passes
+    ``{"library_id": {"$in": [...]}}`` to scope a run to the libraries a thread has
+    attached (its private library plus any shared ones). ``scope_to_thread``
+    (default off) is a convenience that *additionally* injects
+    ``{"thread_id": ctx.state.thread_id}`` when a thread id is present; leave it off
+    for a shared/global knowledge base or when you scope via ``base_filters``.
     """
 
     def __init__(
@@ -39,7 +40,7 @@ class RetrieveTool:
         *,
         k: int = 5,
         name: str = "rag_search",
-        scope_to_thread: bool = True,
+        scope_to_thread: bool = False,
         base_filters: dict | None = None,
     ) -> None:
         self.retriever = retriever
@@ -71,8 +72,10 @@ class RetrieveTool:
             return ToolResult([TextPart("missing required argument: query")], is_error=True)
         k = int((args or {}).get("k") or self.k)
         filters = dict(self.base_filters or {})
-        if self.scope_to_thread and ctx is not None and getattr(ctx, "state", None) is not None:
-            filters["thread_id"] = ctx.state.thread_id
+        if self.scope_to_thread and getattr(ctx, "state", None) is not None:
+            tid = getattr(ctx.state, "thread_id", None)
+            if tid:
+                filters["thread_id"] = tid
         docs = await self.retriever.retrieve(query, k=k, filters=filters or None)
         # Record what was retrieved so an agentic run can report its sources.
         if ctx is not None and getattr(ctx, "state", None) is not None:

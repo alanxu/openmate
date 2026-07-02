@@ -94,6 +94,10 @@ class VectorStore(Protocol):
         """Delete by id, or clear the whole collection when ``ids is None``."""
         ...
 
+    async def get(self, ids: list[str]) -> list["VectorRecord"]:
+        """Fetch stored records by id — for move/copy/preview. Missing ids are skipped."""
+        ...
+
 
 @runtime_checkable
 class Retriever(Protocol):

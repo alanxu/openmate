@@ -9,45 +9,41 @@
 <body>
   <div id="app">
     <aside class="sidebar">
-      <button id="new-task-btn" class="new-task-btn">+ New task</button>
-      <div class="history-label">Recent</div>
-      <div id="thread-list" class="thread-list"></div>
-    </aside>
-    <main class="main">
-      <div id="messages" class="messages">
-        <div class="empty-state">
-          <div class="empty-title">OpenMate</div>
-          <div class="empty-sub">Start a new task to begin.</div>
-        </div>
+      <div class="section-switch">
+        <button type="button" class="section-tab active" data-section="tasks">Tasks</button>
+        <button type="button" class="section-tab" data-section="libraries">Libraries</button>
+        <button type="button" class="section-tab" data-section="projects">Projects</button>
       </div>
-      <form id="composer" class="composer">
-        <div class="add-menu-wrap">
-          <button id="add-btn" type="button" class="add-btn" title="Add knowledge or a folder">+</button>
-          <div id="add-menu" class="add-menu hidden">
-            <button type="button" class="add-menu-item" data-action="paste-text">Add knowledge (paste text)</button>
-            <button type="button" class="add-menu-item" data-action="upload-file">Add knowledge (upload file)</button>
-            <button type="button" class="add-menu-item" data-action="add-folder">Add folder for editing</button>
+      <button id="new-btn" class="new-task-btn">+ New task</button>
+      <div id="nav-list" class="nav-list"></div>
+    </aside>
+
+    <main class="main">
+      <!-- Task screen: chat + trajectory + attachment bar -->
+      <section id="screen-task" class="screen">
+        <div id="task-attach" class="attach-bar hidden"></div>
+        <div id="messages" class="messages">
+          <div class="empty-state">
+            <div class="empty-title">OpenMate</div>
+            <div class="empty-sub">Start a new task to begin.</div>
           </div>
         </div>
-        <input id="file-input" type="file" class="hidden" />
-        <textarea id="input" placeholder="Message OpenMate…" rows="1"></textarea>
-        <button id="send-btn" type="submit">Send</button>
-      </form>
+        <form id="composer" class="composer">
+          <textarea id="input" placeholder="Message OpenMate…" rows="1"></textarea>
+          <button id="send-btn" type="submit">Send</button>
+        </form>
+      </section>
+
+      <!-- Library manager screen -->
+      <section id="screen-library" class="screen hidden">
+        <div id="library-view" class="entity-view"></div>
+      </section>
+
+      <!-- Project editor screen -->
+      <section id="screen-project" class="screen hidden">
+        <div id="project-view" class="entity-view"></div>
+      </section>
     </main>
-    <aside class="context-sidebar">
-      <div class="context-section">
-        <div class="context-label">Knowledge</div>
-        <div id="knowledge-list" class="context-list">
-          <div class="context-empty">None added yet</div>
-        </div>
-      </div>
-      <div class="context-section">
-        <div class="context-label">Folders (editable)</div>
-        <div id="folder-list" class="context-list">
-          <div class="context-empty">None added yet</div>
-        </div>
-      </div>
-    </aside>
   </div>
 
   <div id="modal-overlay" class="modal-overlay hidden">
@@ -55,6 +51,8 @@
       <div id="modal-title" class="modal-title"></div>
       <textarea id="modal-textarea" class="modal-field hidden" rows="6"></textarea>
       <input id="modal-input" class="modal-field hidden" type="text" />
+      <div id="modal-list" class="modal-list hidden"></div>
+      <div id="modal-form" class="modal-form hidden"></div>
       <div id="modal-error" class="modal-error hidden"></div>
       <div class="modal-actions">
         <button id="modal-cancel" type="button" class="modal-btn modal-btn-secondary">Cancel</button>
