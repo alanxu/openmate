@@ -753,15 +753,16 @@ async function loadLogsNav() {
   const res = await fetch("/api/logs");
   const data = res.ok ? await res.json() : { threads: [], orphan_logs: [], log_dir: "" };
   renderLogsList(data);
-  // If we had a thread open, refresh its view (it may have grown); otherwise
-  // show the placeholder pane.
+  // If the active log thread disappeared from disk (file deleted), clear it
+  // and show the empty placeholder. We do NOT auto-reopen a thread here —
+  // that would recurse: loadLogsNav → openLogThread → loadLogsNav → …
+  // openLogThread handles its own view rendering.
   if (activeLogThreadId) {
     const exists = data.threads.some((t) => t.thread_id === activeLogThreadId)
       || data.orphan_logs.some((o) => o.thread_id === activeLogThreadId);
-    if (exists) {
-      await openLogThread(activeLogThreadId);
-    } else {
+    if (!exists) {
       activeLogThreadId = null;
+      stopLogPolling();
       renderLogEmpty();
     }
   } else {
@@ -786,6 +787,7 @@ function renderLogsList(data) {
   for (const t of data.threads) {
     const item = document.createElement("div");
     item.className = "nav-item logs-nav-item" + (t.thread_id === activeLogThreadId ? " active" : "");
+    item.dataset.threadId = t.thread_id;
     const sub = t.has_log ? "has log" : "no log";
     item.innerHTML = `<div class="nav-name">${escapeHtml(t.title || "Untitled")}</div>
       <div class="nav-sub">${escapeHtml(t.thread_id.slice(0, 12))} · ${sub}</div>`;
@@ -801,6 +803,7 @@ function renderLogsList(data) {
     for (const o of data.orphan_logs) {
       const item = document.createElement("div");
       item.className = "nav-item logs-nav-item" + (o.thread_id === activeLogThreadId ? " active" : "");
+      item.dataset.threadId = o.thread_id;
       item.innerHTML = `<div class="nav-name">${escapeHtml(o.thread_id)}</div>
         <div class="nav-sub">${o.size} bytes · orphaned</div>`;
       item.addEventListener("click", () => openLogThread(o.thread_id));
@@ -822,8 +825,12 @@ function renderLogEmpty() {
 
 async function openLogThread(id) {
   activeLogThreadId = id;
-  // Refresh the left list so the active highlight follows.
-  if (section === "logs") loadLogsNav();
+  // Update the active highlight in the existing nav list without refetching.
+  // Refetching would loop: loadLogsNav triggers this function when there's an
+  // active thread, which triggers loadLogsNav again, etc.
+  for (const el of logsListEl.querySelectorAll(".logs-nav-item")) {
+    el.classList.toggle("active", el.dataset.threadId === id);
+  }
   await renderLogView(id, 0);
   startLogPolling(id);
 }
