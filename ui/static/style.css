@@ -80,6 +80,7 @@ html, body { margin: 0; height: 100%; font-family: var(--sans); color: var(--tex
 @media (max-width: 900px) { .messages { padding: 20px 6%; } }
 
 .empty-state { margin: auto; text-align: center; color: var(--text-dim); }
+.empty-logo { width: 220px; height: auto; margin: 0 auto 18px; display: block; }
 .empty-title { font-size: 22px; font-weight: 600; color: var(--text); }
 .empty-sub { font-size: 14px; margin-top: 6px; }
 
