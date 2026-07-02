@@ -894,13 +894,242 @@ the whole job of "marking it done."
 
 ---
 
+## Part III — Forward-looking extensions
+
+Roadmap for the next phase of OpenMate's eval surface. The goal is to extend
+Parts I/II along three axes that the existing suite doesn't cover yet:
+
+- **External benchmark position** — a defensible number (SWE-bench,
+  τ-bench, GAIA) that someone outside the project can point to.
+- **Trajectory and judge rigor** — beyond outcome, the shape of *how* the
+  agent got there, and confidence in the metrics themselves.
+- **Domain portability** — a `Verifier` protocol and per-domain verifiers
+  that make adding the trading and job-hunt skills cheap to evaluate, not
+  a rewrite of the harness each time.
+
+Nothing here replaces Part I or Part II; every addition is additive on top
+of the existing tier structure, with the same rule that **structural
+outcome verification beats prose matching** wherever a checkable end state
+exists.
+
+### 1. External benchmark integration
+
+The current suite is hand-crafted — that's a feature for control and
+reproducibility, but a bug for external comparability. For an open-source
+agent to be taken seriously, the README needs a number someone has heard of.
+
+Priority order, roughly by signal-to-noise:
+
+| Benchmark | What it measures | Why for OpenMate | Cost |
+|---|---|---|---|
+| **SWE-bench Verified** | Real GitHub issues, full-repo fix, hidden tests | Single most cited coding-agent benchmark; the trajectory pattern (read → edit → run tests) lines up with INT-4/5/6 | High — full repo setup per task, ~5-30 min/task |
+| **τ-bench (tau-bench)** | Multi-turn tool-use reliability against a realistic mock tool API | Closest existing benchmark to "agent as a whole"; stresses the loop, not just code-gen | Medium — mock APIs, ~1-5 min/task |
+| **GAIA** | Multi-step reasoning with web/file/tool use, real-world questions | Good general-agent signal; tests planning + tool selection in combination | Medium |
+| **LiveCodeBench** | Recent (post-training-cutoff) competitive-programming problems | Anti-contamination; HumanEval/MBPP are saturated and partially memorized | Low |
+
+Integration shape: each benchmark wraps as a `BenchmarkAdapter` exposing
+`load() -> list[BenchmarkCase]` and `verify(case, trajectory) -> VerifierResult`,
+plugged into the existing pytest harness under a `benchmarks/` marker so
+the costly ones don't run on every commit. Pin results to a release,
+don't chase the leaderboard.
+
+### 2. Trajectory-quality scoring
+
+INT-12 measures step efficiency (a single number), but no general
+trajectory-quality rubric exists. Add a `_trajectory_score(events, rubric)`
+helper that grades the *shape* of the trajectory, separately from whether
+the final answer was right:
+
+- **Reads-before-writes**: did the agent read context before editing?
+- **Verification**: did it re-run a check (test, script, command) after
+  making a change?
+- **Backtrack quality**: when it undid work, was it a clean revert or a
+  thrash?
+- **Parallelism**: did it call independent tools in the same turn?
+- **Tool economy**: side-effecting calls per task, separate from total calls
+
+Apply as a second metric alongside outcome on INT-4/5/6/12. The
+infrastructure is the same LLM-as-judge scaffold already in `metrics.py` —
+different rubric, layered on, never substituted for the structural verifier.
+
+### 3. LLM-judge calibration
+
+`_llm_judge()` is used on INT-6/8/13/16 today. Its numbers are only as
+trustworthy as the judge's actual agreement with a human, and that drifts
+with model versions and rubric drift.
+
+Methodology:
+
+1. Build a per-rubric calibration set of 50-100 hand-labeled samples
+   (transcripts + human scores), kept in `evals/calibration/` and not
+   visible to development.
+2. Re-run the judge on this set quarterly; report Cohen's kappa (or simple
+   % agreement for the 1-5 case) against the human labels.
+3. If kappa drops below ~0.6 for any rubric, the rubric or the judge needs
+   work before that metric is reported externally.
+
+A calibration set is cheap (an afternoon per rubric) and turns the
+LLM-judge numbers from "looks rigorous" into "actually rigorous."
+
+### 4. Multi-turn / cooperative evals
+
+Every existing case is single-shot. Real users iterate: "no, the other
+file," "actually use v2," "show me what you changed." Add a category:
+
+- **Mid-task correction** — user redirects the agent partway through
+- **Late constraint** — user adds a constraint after the agent has started
+- **Explanation request** — user asks "what did you actually do and why"
+
+A new **Category M** with three to five cases, each verifying that the
+agent adapts without losing accumulated state (cross-checks INT-10/11 in
+Part II) and without defensively re-doing work that's already correct.
+
+### 5. Prompt-robustness probes
+
+Same capability, different phrasing. Take five to ten Part II cases and
+run them under small perturbations:
+
+- Paraphrase the task
+- Add a polite preamble ("would you mind...")
+- Switch first-person → third-person
+- Inject a distractor sentence in the middle of the prompt
+
+The variance across perturbations tells you whether the agent has the
+*capability* or just the *prompt match*. High-variance cases get a closer
+look — either the prompt template is brittle, or the underlying capability
+is genuine but the model is sensitive to surface form.
+
+### 6. Domain-portable eval framework — the big one
+
+This is the prerequisite for trading and job-hunt evals to be cheap
+rather than a rewrite each time. The principle: cases are coding-shaped
+today because the verifiers are coding-shaped. To extend cleanly, lift
+"verifier" out of the case body into a protocol:
+
+```python
+class Verifier(Protocol):
+    def verify(
+        self,
+        task_input: TaskInput,
+        trajectory: list[Event],
+        world_state: WorldState,
+    ) -> VerifierResult: ...
+```
+
+- **Coding verifiers** (already exist as `_run_script`, `byte_diff`, etc.
+  scattered across Part II) get pulled into a `CodingVerifier` class.
+- **Trading verifiers**: `PnLVerifier`, `RiskLimitVerifier`,
+  `NoWashTradeVerifier`.
+- **Job-hunt verifiers**: `MatchQualityVerifier`, `OutreachQualityVerifier`,
+  `NoSpamVerifier`.
+
+The Part II case harness stays the same; only the verifier swaps per
+domain. New domain = new verifier directory + new fixtures, not a harness
+rewrite. This single refactor is what makes the difference between
+"extending to trading" being a one-week job and a one-month job.
+
+### 7. Domain-specific extensions (trading & job-hunt)
+
+Once the `Verifier` protocol exists, building evals for new skills is
+mostly fixture authoring. Concrete per-domain needs:
+
+**Trading skill**
+
+- **Synthetic environment**: paper-trading simulator with replayable
+  historical data. Grounded in known signals so the verifier can score
+  "did it make the right trade given this signal at this time" against
+  ground truth.
+- **Outcome metrics**: Sharpe ratio, max drawdown, win rate, P&L vs
+  benchmark. Slow to accumulate and noisy, but they're the only honest
+  answer to "is this actually useful in production."
+- **Process metrics** (these matter more than for coding, because
+  side-effects have real cost):
+  - **Reversal rate** — how often does the agent undo its own work?
+  - **Side-effect density** — side-effecting calls per successful task
+  - **Confirmation-seeking rate** — does it ask before acting on
+    ambiguous signals (extends INT-13's pattern)
+- **Safety cases** (zero tolerance, same shape as INT-19/20/21/22):
+  - Doesn't exceed position limits
+  - Respects stop-losses and risk caps
+  - Doesn't trade on stale data
+  - Doesn't leak portfolio info across threads
+
+**Job-hunt skill**
+
+- **Synthetic environment**: synthetic job board with postings that have
+  known properties (seniority, stack, comp band, location).
+- **Outcome metrics**: response rate, interview conversion rate (in
+  synthetic env — real metrics need real users and time).
+- **Process metrics**: tailors each application, checks for duplicates,
+  respects rate limits.
+- **Safety cases** (zero tolerance):
+  - Doesn't fabricate experience on the resume
+  - Doesn't apply to jobs the user already rejected
+  - Doesn't send to wrong recipients
+  - Doesn't spam (rate limit enforced by the loop, not by the prompt)
+
+### 8. Cross-domain transfer measurement
+
+When you improve the coding eval, does the trading eval also improve? If
+yes, the agent loop is genuinely generic — and that's the strongest
+marketing claim for "open-source agent platform," not "open-source coding
+agent." If no, you've overfit coding-shaped priors.
+
+Track explicitly: per-domain scorecard, per-release, with the
+correlations called out. Report it in the README. It's a competitive
+moat: most projects claiming "general-purpose agent" can't actually show
+that improvements transfer across domains.
+
+### 9. Anti-patterns
+
+Worth pinning down because they're easy to drift into:
+
+- **Public benchmark leaderboard chasing.** SWE-bench % becomes vanity
+  fast. Pin a number, don't move the goalposts every release.
+- **Verifier overfitting.** If the verifier is `did it run pytest`, agents
+  learn to satisfy pytest, not the underlying goal. Always pair
+  structural verifiers with an LLM-judge or human spot-check on output
+  *quality*, not just pass/fail.
+- **Same-model-as-judge.** Don't use the same model to grade itself —
+  errors correlate. Cross-family judging (Claude judging GPT or vice
+  versa) is more reliable.
+- **Held-out contamination.** Don't tune prompts against benchmark
+  answers. Keep a golden set that's never visible to development.
+- **Cost-blind eval.** Reporting outcome without $/task and steps/task
+  hides expensive regressions. The step-efficiency metric in INT-12 is
+  a start; add $/task alongside.
+
+### 10. Priority order
+
+The "what to ship when" list, ordered by leverage:
+
+| When | What | Why now |
+|---|---|---|
+| **Now** | SWE-bench Verified integration + per-release reporting | External position; the most citation-worthy single addition |
+| **Now** | `_trajectory_score(events, rubric)` + apply on INT-4/5/6/12 | Events are already captured; ~200-line addition layered on existing infrastructure |
+| **Now** | LLM-judge calibration sets (50-100 human labels per rubric) | Cheap insurance on metrics already in use |
+| **Next** | Multi-turn category (3-5 cases) | Catches a whole failure class the single-shot cases miss |
+| **Next** | `Verifier` protocol refactor + first non-coding verifier (job-hunt is cheaper to build than trading) | The single biggest unlock for the domain-extension story |
+| **Next** | Prompt-robustness probes on 5-10 existing cases | Distinguishes "has the capability" from "matches the prompt" |
+| **Later** | Synthetic trading env + outcome metrics | When the trading skill is actually being built |
+| **Later** | Live / production outcome pipeline | When there are real users in production |
+
+The biggest leverage by far is the `Verifier` protocol refactor. It
+turns "adding trading evals" from a research project into adding a
+directory. Worth doing before writing the first trading case, not after.
+
+---
+
 ## Coverage summary
 
 44 doc cases total: 21 in Part I (Unit), 23 in Part II (Integration,
 INT-1 through INT-23 across 9 capability categories), plus 3 of the
 Integration cases (INT-19/20/21) also have a third, Manual/Human tier in
 `evals/run_manual.py` for quality judgment beyond what a keyword/compliance
-metric can catch.
+metric can catch. **Part III** adds the forward-looking extensions
+(external benchmarks, trajectory quality, multi-turn, `Verifier` protocol,
+domain-specific evals for trading/job-hunt) — see that section for the
+roadmap and priority order.
 
 Three Unit cases are intentionally written as **expected-fail today** (A7,
 D3, E1) — they exist to give three of doc 15's priority fixes (R5
