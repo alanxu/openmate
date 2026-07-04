@@ -386,6 +386,60 @@ class SQLiteStore:
             )
         self._conn.commit()
 
+    # --- delete a task (wipes all thread-owned state) ---------------------------
+    def thread_exists(self, thread_id: str) -> bool:
+        """True iff a row exists in the ``threads`` index for this id.
+
+        Used by ``DELETE /api/threads/{id}`` to distinguish a real 404 from
+        "thread had no checkpoint / no private library" (a successful delete
+        of a half-empty task) — both produce a 0-row ``delete_thread`` result,
+        but only the former should be surfaced as not-found to the caller.
+        """
+        row = self._conn.execute(
+            "SELECT 1 FROM threads WHERE thread_id=?", (thread_id,)
+        ).fetchone()
+        return row is not None
+
+    def delete_thread(self, thread_id: str) -> list[str]:
+        """Delete a task and every row it owns; return the private-library chunk ids.
+
+        Wipes: every checkpoint revision, the thread row, the thread's folders,
+        library attachments, the thread's private library (libraries + sources
+        rows), and the per-thread JSONL log file (handled by the caller). The
+        vector-store chunks in ``chunk_ids`` are returned so the caller can drop
+        them — the store does not own the vector store.
+
+        Returns ``[]`` if the thread row does not exist, so the caller can
+        distinguish a no-op delete from one that returned chunk ids.
+        """
+        # Nothing to do if the thread row is absent — caller can surface a 404.
+        row = self._conn.execute(
+            "SELECT 1 FROM threads WHERE thread_id=?", (thread_id,)
+        ).fetchone()
+        if not row:
+            return []
+
+        # Collect the chunk ids that belong to this thread's PRIVATE library
+        # (library_id == thread_id). Shared libraries whose attachments we drop
+        # here keep their own sources untouched — those chunks stay in the vector
+        # store and remain accessible to the other threads still attached.
+        priv_rows = self._conn.execute(
+            "SELECT chunk_ids FROM library_knowledge WHERE library_id=?", (thread_id,)
+        ).fetchall()
+        chunk_ids = [cid for r in priv_rows for cid in json.loads(r[0])]
+
+        # Order matters only for FK-less schemas; we delete child rows first
+        # for clarity (not strictly required by SQLite, which deferred FK
+        # checks are off anyway).
+        self._conn.execute("DELETE FROM checkpoints WHERE thread_id=?", (thread_id,))
+        self._conn.execute("DELETE FROM thread_folders WHERE thread_id=?", (thread_id,))
+        self._conn.execute("DELETE FROM thread_libraries WHERE thread_id=?", (thread_id,))
+        self._conn.execute("DELETE FROM library_knowledge WHERE library_id=?", (thread_id,))
+        self._conn.execute("DELETE FROM libraries WHERE library_id=?", (thread_id,))
+        self._conn.execute("DELETE FROM threads WHERE thread_id=?", (thread_id,))
+        self._conn.commit()
+        return chunk_ids
+
     # --- per-thread editable folders (UI: '+' → Add folder for editing) --------
 
     def add_folder(self, thread_id: str, path: str) -> None:

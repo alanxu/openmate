@@ -61,6 +61,23 @@ def list_log_files() -> list[dict[str, Any]]:
     return out
 
 
+def delete_log_file(thread_id: str) -> bool:
+    """Remove the JSONL log file for ``thread_id`` if it exists.
+
+    Returns ``True`` if a file was removed, ``False`` if there was nothing to
+    delete. Missing parent dir or file → no-op (returns False). Other OS errors
+    are not silently swallowed — failing the log-delete should fail the whole
+    delete-the-task operation, since leaving a stale log behind after wiping the
+    DB row is exactly the kind of half-state we want to avoid.
+    """
+    path = default_log_path(thread_id)
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def _raw_to_jsonable(raw: Any) -> Any:
     """Best-effort JSON form of a provider's raw payload (pydantic / dataclass / str)."""
     if raw is None:

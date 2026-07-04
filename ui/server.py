@@ -35,6 +35,7 @@ from openmate.adapters.tools.builtin import all_tools  # noqa: E402
 from openmate.adapters.tracers.jsonl import (  # noqa: E402
     DEFAULT_LOG_DIR,
     default_log_path,
+    delete_log_file,
     force_attach,
     list_log_files,
 )
@@ -655,6 +656,29 @@ async def update_thread(request: Request) -> JSONResponse:
     return JSONResponse({"thread_id": thread_id, "project_id": project_id})
 
 
+async def delete_thread(request: Request) -> JSONResponse:
+    """DELETE /api/threads/{id} — wipe the task, its DB state, its log file, and
+    the private-library vector chunks. 404 if the thread doesn't exist."""
+    thread_id = request.path_params["thread_id"]
+    store = STATE.new_store()
+    try:
+        if not store.thread_exists(thread_id):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        chunk_ids = store.delete_thread(thread_id)
+    finally:
+        store.close()
+    # Drop the private-library vectors (the only chunks owned by the thread),
+    # then unlink the JSONL log file. If vector.delete raises, leave the DB
+    # wipe as-is — the row is gone, the caller chose destructive, and a stale
+    # orphan chunk is far cheaper than a half-state DB.
+    if chunk_ids:
+        await STATE.vector_store.delete(ids=chunk_ids)
+    log_removed = delete_log_file(thread_id)
+    return JSONResponse(
+        {"deleted": thread_id, "n_chunks": len(chunk_ids), "log_removed": log_removed}
+    )
+
+
 async def get_thread_project(request: Request) -> JSONResponse:
     thread_id = request.path_params["thread_id"]
     store = STATE.new_store()
@@ -890,6 +914,7 @@ def make_app(db_path: str, allow_write: bool, model_name: str | None) -> Starlet
         Route("/api/threads/{thread_id}/libraries", attach_thread_library, methods=["POST"]),
         Route("/api/threads/{thread_id}/libraries", detach_thread_library, methods=["DELETE"]),
         Route("/api/threads/{thread_id}", update_thread, methods=["PATCH"]),
+        Route("/api/threads/{thread_id}", delete_thread, methods=["DELETE"]),
         Route("/api/threads/{thread_id}/project", get_thread_project, methods=["GET"]),
         Route("/api/libraries/{library_id}", update_library, methods=["PATCH"]),
         Route("/api/libraries/{library_id}", delete_library, methods=["DELETE"]),

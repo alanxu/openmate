@@ -149,3 +149,93 @@ def test_sqlite_migrates_legacy_thread_knowledge(tmp_path):
         assert {l["library_id"] for l in s.list_thread_libraries("t_old")} == {"t_old"}
     finally:
         s.close()
+
+
+def test_sqlite_delete_thread_wipes_all_owned_state(tmp_path):
+    """``delete_thread`` must remove every row keyed on this thread (or its
+    private library): checkpoints, the index row, folders, library attachments,
+    private-library sources, and the private-library row itself. It also returns
+    the chunk ids that were in the private library so the caller can drop the
+    matching vectors.
+
+    Shared libraries the task attached to must stay intact — their chunks still
+    belong to other threads.
+    """
+    db = str(tmp_path / "om.sqlite")
+    s = SQLiteStore(db)
+    try:
+        # Set up two threads. t1 has its private library + a shared attach;
+        # t2 only has its own private lib. t1's shared library should survive
+        # the t1 delete untouched and still be attached to t2.
+        s.ensure_private_library("t1")
+        s.add_library_source("t1", "p.md", ["t1:p.md#0", "t1:p.md#1"])
+        s.create_library("lib_shared", "Shared", embedder="hashing", dim=256)
+        s.add_library_source("lib_shared", "shared.md", ["lib_shared:shared.md#0"])
+        s.attach_library("t1", "lib_shared")
+        s.attach_library("t2", "lib_shared")
+        s.add_folder("t1", "/tmp/example")
+        # Give t1 a checkpoint (transcript) so the checkpoints path is hit.
+        from openmate.kernel.codec import state_to_jsonable  # noqa: E402
+        from openmate.kernel.types import RunState  # noqa: E402
+
+        async def _seed(tid: str) -> None:
+            state = RunState(thread_id=tid, messages=[], status="idle", rev=1)
+            await s.save(tid, state)
+
+        import asyncio
+
+        asyncio.run(_seed("t1"))
+        asyncio.run(_seed("t2"))  # so ``thread_exists('t2')`` is True
+
+        # Sanity check the row counts before deleting.
+        n_pre = s._conn.execute(
+            "SELECT (SELECT COUNT(*) FROM checkpoints WHERE thread_id=?) "
+            "+ (SELECT COUNT(*) FROM threads WHERE thread_id=?) "
+            "+ (SELECT COUNT(*) FROM thread_folders WHERE thread_id=?) "
+            "+ (SELECT COUNT(*) FROM thread_libraries WHERE thread_id=?) "
+            "+ (SELECT COUNT(*) FROM library_knowledge WHERE library_id=?) "
+            "+ (SELECT COUNT(*) FROM libraries WHERE library_id=?)",
+            ("t1", "t1", "t1", "t1", "t1", "t1"),
+        ).fetchone()[0]
+        assert n_pre >= 5  # transcript + idx + folder + attach + source + lib
+
+        # Delete t1.
+        chunk_ids = s.delete_thread("t1")
+        assert sorted(chunk_ids) == ["t1:p.md#0", "t1:p.md#1"]
+
+        # Every t1-owned row is gone.
+        assert s._conn.execute("SELECT 1 FROM threads WHERE thread_id='t1'").fetchone() is None
+        assert s._conn.execute(
+            "SELECT 1 FROM checkpoints WHERE thread_id='t1'"
+        ).fetchone() is None
+        assert s._conn.execute(
+            "SELECT 1 FROM thread_folders WHERE thread_id='t1'"
+        ).fetchone() is None
+        assert s._conn.execute(
+            "SELECT 1 FROM thread_libraries WHERE thread_id='t1'"
+        ).fetchone() is None
+        assert s._conn.execute(
+            "SELECT 1 FROM library_knowledge WHERE library_id='t1'"
+        ).fetchone() is None
+        assert s._conn.execute(
+            "SELECT 1 FROM libraries WHERE library_id='t1'"
+        ).fetchone() is None
+
+        # Shared library and its t2 attachment survived.
+        assert s.get_library("lib_shared") is not None
+        assert s._conn.execute(
+            "SELECT chunk_ids FROM library_knowledge WHERE library_id='lib_shared' AND source='shared.md'"
+        ).fetchone()[0] == json.dumps(["lib_shared:shared.md#0"])
+        # t2's shared-library attachment is intact; t1's is gone (along with t1's
+        # own private library row).
+        assert "lib_shared" in {l["library_id"] for l in s.list_thread_libraries("t2")}
+        assert {l["library_id"] for l in s.list_thread_libraries("t1")} == set()
+
+        # Re-deleting is a safe no-op and returns no chunks.
+        assert s.delete_thread("t1") == []
+
+        # And ``thread_exists`` agrees.
+        assert s.thread_exists("t1") is False
+        assert s.thread_exists("t2") is True
+    finally:
+        s.close()

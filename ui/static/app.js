@@ -194,7 +194,16 @@ async function loadTasksNav() {
   if (!threads.length) return navListEl.appendChild(navEmpty("No tasks yet"));
   for (const t of threads) {
     const active = t.thread_id === threadId && !screens.task.classList.contains("hidden");
-    navListEl.appendChild(navItem(t.title || "Untitled", active, () => openThread(t.thread_id)));
+    navListEl.appendChild(
+      navItem(
+        t.title || "Untitled",
+        active,
+        () => openThread(t.thread_id),
+        null,
+        // 3-dot menu on each row — Delete for now, more options land here later.
+        { label: "⋮", title: "Task actions", onClick: (anchorEl) => openTaskMenu(anchorEl, t) },
+      )
+    );
   }
 }
 async function loadLibrariesNav() {
@@ -218,12 +227,37 @@ async function loadProjectsNav() {
     navListEl.appendChild(navItem(p.name, p.project_id === activeProjectId, () => openProject(p.project_id), sub));
   }
 }
-function navItem(label, active, onClick, sub) {
+function navItem(label, active, onClick, sub, actionBtn) {
   const div = document.createElement("div");
   div.className = "nav-item" + (active ? " active" : "");
-  div.innerHTML = `<div class="nav-name">${escapeHtml(label)}</div>` + (sub ? `<div class="nav-sub">${escapeHtml(sub)}</div>` : "");
+  // Wrap the label/sub in `.nav-item-main` so we can scope the click target
+  // visually (the text is the "main" thing to click); the action button
+  // sits beside it and stops propagation so it doesn't double-trigger.
+  const main = document.createElement("div");
+  main.className = "nav-item-main";
+  main.innerHTML =
+    `<div class="nav-name">${escapeHtml(label)}</div>` +
+    (sub ? `<div class="nav-sub">${escapeHtml(sub)}</div>` : "");
+  div.appendChild(main);
   div.title = label;
+  // Listener on the outer row (matches the pre-menu behavior): clicking the
+  // row body anywhere opens the thread. The action button's ``stopPropagation``
+  // keeps its own clicks out of this path.
   div.addEventListener("click", onClick);
+  if (actionBtn) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "nav-item-action";
+    btn.textContent = actionBtn.label || "⋮";
+    btn.title = actionBtn.title || "Actions";
+    // `aria-haspopup="menu"` so screen readers know the button expands a menu.
+    btn.setAttribute("aria-haspopup", "menu");
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      actionBtn.onClick(btn);
+    });
+    div.appendChild(btn);
+  }
   return div;
 }
 function navEmpty(text) {
@@ -300,6 +334,111 @@ function closeStream() {
   }
   liveAssistantBubble = null;
   liveCards.clear();
+}
+
+// Single-flight guard for the destructive DELETE path: a fast double-click on
+// the menu item shouldn't fire two DELETEs at the same row.
+let _deleteInFlight = false;
+
+async function deleteTask(task) {
+  // Called either from the per-row 3-dot menu (with a `task`) or from a
+  // future "delete current task" affordance that targets the open thread.
+  const tid = task ? task.thread_id : threadId;
+  if (!tid || _deleteInFlight) return;
+  _deleteInFlight = true;
+  try {
+    const ok = await openConfirm(
+      "Delete this task? This wipes its chat transcript, log file, and any private knowledge it had. This cannot be undone.",
+    );
+    if (!ok) return;
+    // Only tear down the active SSE if the deleted task is the one the SSE
+    // belongs to — deleting a row that isn't currently open shouldn't kill
+    // an unrelated in-flight chat.
+    const wasOpen = tid === threadId;
+    if (wasOpen) closeStream();
+    if (activeLogThreadId === tid) activeLogThreadId = null;
+    const res = await fetch(`/api/threads/${encodeURIComponent(tid)}`, { method: "DELETE" });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      addStatusLine(`error: ${data.error || "delete failed"}`);
+      return;
+    }
+    if (wasOpen) {
+      // Reset to a fresh empty task — same UX as if the user clicked "New".
+      threadId = null;
+      newTask();
+    } else if (section === "tasks") {
+      // The row we deleted is gone, so refresh the sidebar list.
+      loadNav();
+    }
+    const verb = data.log_removed ? "removed" : "was already gone";
+    addStatusLine(
+      `deleted "${task ? (task.title || "Untitled") : "task"}" (${data.n_chunks} vectors, log ${verb})`,
+    );
+  } finally {
+    _deleteInFlight = false;
+  }
+}
+
+// Tiny popover menu anchored to the 3-dot button on a row. Used by the tasks
+// nav list (and the next entity types gain a similar affordance). Each item
+// is just a `<button data-act="…">` so adding a new option later is a one-line
+// HTML addition + a matching case in the click handler.
+function openTaskMenu(anchorEl, task) {
+  // Tear down any other open menu (only one at a time).
+  document.querySelectorAll(".nav-item-menu").forEach((m) => m.remove());
+
+  const menu = document.createElement("div");
+  menu.className = "nav-item-menu";
+  menu.setAttribute("role", "menu");
+  // More actions will land here later (rename, export, fork, …).
+  menu.innerHTML = `
+    <button type="button" class="nav-item-menu-item nav-item-menu-item-danger" data-act="delete" role="menuitem">Delete task</button>
+  `;
+  document.body.appendChild(menu);
+
+  // Position: anchor to the row's right edge; flip vertically if the menu
+  // would overflow the viewport bottom.
+  const rect = anchorEl.getBoundingClientRect();
+  const menuRect = menu.getBoundingClientRect();
+  const fitsBelow = rect.bottom + 4 + menuRect.height <= window.innerHeight - 8;
+  menu.style.top = fitsBelow
+    ? `${rect.bottom + 4}px`
+    : `${Math.max(8, rect.top - menuRect.height - 4)}px`;
+  menu.style.left = `${Math.max(
+    8,
+    Math.min(window.innerWidth - menuRect.width - 8, rect.right - menuRect.width),
+  )}px`;
+
+  const close = () => {
+    menu.remove();
+    document.removeEventListener("click", outsideClick, true);
+    document.removeEventListener("keydown", escClose, true);
+  };
+  function outsideClick(e) {
+    if (menu.contains(e.target) || anchorEl.contains(e.target)) return;
+    close();
+  }
+  function escClose(e) {
+    if (e.key === "Escape") close();
+  }
+
+  menu.addEventListener("click", (e) => {
+    const item = e.target.closest("[data-act]");
+    if (!item) return;
+    e.stopPropagation();
+    // Tear the menu down BEFORE running the action so the delete's confirm
+    // modal isn't competing with a sibling popover in the DOM.
+    close();
+    if (item.dataset.act === "delete") deleteTask(task);
+  });
+
+  // Defer outside-click registration past the click that opened us —
+  // otherwise the same click that flipped the menu open would also close it.
+  setTimeout(() => {
+    document.addEventListener("click", outsideClick, true);
+    document.addEventListener("keydown", escClose, true);
+  }, 0);
 }
 
 function ensureThreadId() {
