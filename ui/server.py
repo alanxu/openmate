@@ -114,24 +114,47 @@ class AppState:
         project = store.get_thread_project(thread_id)
         proj_dirs = project["directories"] if project else []
         extra_roots = list(dict.fromkeys([*proj_dirs, *store.list_folders(thread_id)]))
+        # An attached project is the task's *working directory*, not merely an allowed
+        # root: relative paths and `run_shell` with no explicit cwd resolve here.
+        default_dir = proj_dirs[0] if proj_dirs else None
         # A task retrieves across the libraries it has selected (attached). There is
         # no implicit per-thread library — knowledge lives only in libraries you
         # create and then attach. Empty selection → the sentinel matches nothing.
-        lib_ids = [lib["library_id"] for lib in store.list_thread_libraries(thread_id)]
+        libs = store.list_thread_libraries(thread_id)
+        lib_ids = [lib["library_id"] for lib in libs]
         retrieve = RetrieveTool(
             self.retriever,
             base_filters={"library_id": {"$in": lib_ids or ["__none__"]}},
             scope_to_thread=False,
         )
         instructions = DEFAULT_INSTRUCTIONS
+        # The generic "if knowledge is attached, use rag_search" line in DEFAULT_INSTRUCTIONS
+        # isn't enough on its own: the model has no way to tell a library IS attached, so it
+        # answers from priors. Naming the attached libraries here makes retrieval reliable.
+        if libs:
+            named = ", ".join(f"{lib['name']} ({lib['n_chunks']} chunks)" for lib in libs)
+            instructions += (
+                f"\n\nThis task has knowledge libraries attached: {named}. "
+                "For any question they could inform, you MUST call `rag_search` first and "
+                "ground your answer in the retrieved passages (cite sources as [n]); do not "
+                "answer from prior knowledge when a library is relevant."
+            )
+        if default_dir:
+            instructions += (
+                f"\n\nYour working directory for this task is the attached project folder: {default_dir}. "
+                "Create any new files, build features, and run setup/build/test commands INSIDE this "
+                "folder — use relative paths (e.g. `write_file('src/app.py', ...)`, `run_shell('pytest')`), "
+                "which resolve here by default. Do not write to other locations unless explicitly asked."
+            )
         if project and project["goals"].strip():
             instructions += "\n\nProject goals for this task (keep them in mind):\n" + project["goals"].strip()
         # The chat UI always gets write + shell by default (this is a local
         # single-user assistant, not a multi-tenant service), scoped to the server's
-        # cwd plus the task's project directories and any task-local folders — see
+        # cwd plus the task's project directories and any task-local folders, and
+        # defaulting to the attached project dir — see
         # openmate/adapters/tools/builtin.py:make_shell_tool's docstring for the
         # (cwd-only) confinement caveat.
-        tools = [*all_tools(extra_roots), retrieve]
+        tools = [*all_tools(extra_roots, default_dir=default_dir), retrieve]
         return Agent(
             name="openmate",
             model=default_model(self.model_name),

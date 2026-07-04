@@ -58,18 +58,26 @@ def current_time() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _make_safe_path(extra_roots: "list[str] | None" = None):
-    """Build a path-confinement check rooted at cwd plus any ``extra_roots``.
+def _make_safe_path(extra_roots: "list[str] | None" = None, base: "str | Path | None" = None):
+    """Build a path-confinement check rooted at cwd (or ``base``) plus any ``extra_roots``.
 
     A closure, not a module-level singleton, so callers (e.g. the UI, scoping
     write access per thread/"folder added for editing") can confine a *set* of
     file tools to a caller-chosen allowlist without touching the Tool port or
-    the default cwd-only behavior every other caller still gets.
+    the default cwd-only behavior every other caller still gets. Relative paths
+    resolve against ``base`` (the task's working directory) when given, else the
+    process cwd — so an attached project becomes the *default* directory, not
+    merely an allowed one.
     """
-    roots = [Path.cwd().resolve(), *(Path(r).expanduser().resolve() for r in (extra_roots or []))]
+    base_dir = Path(base).expanduser().resolve() if base else Path.cwd().resolve()
+    roots: list[Path] = []
+    for r in [base_dir, Path.cwd().resolve(), *(Path(x).expanduser().resolve() for x in (extra_roots or []))]:
+        if r not in roots:
+            roots.append(r)
 
     def safe_path(path: str) -> Path:
-        p = Path(path).expanduser().resolve()
+        raw = Path(path).expanduser()
+        p = raw.resolve() if raw.is_absolute() else (base_dir / raw).resolve()
         for root in roots:
             if root in p.parents or p == root:
                 return p
@@ -79,14 +87,16 @@ def _make_safe_path(extra_roots: "list[str] | None" = None):
     return safe_path
 
 
-def make_file_tools(extra_roots: "list[str] | None" = None) -> list:
+def make_file_tools(extra_roots: "list[str] | None" = None, *, default_dir: "str | Path | None" = None) -> list:
     """``read_file``/``write_file``/``list_directory``, confined to cwd + ``extra_roots``.
 
     The module-level ``read_file``/``write_file``/``list_directory`` below are
     just this factory called with no extra roots — kept as importable names for
     backward compatibility (existing callers, tests) that reference them directly.
+    ``default_dir`` sets the base that relative paths resolve against (the task's
+    working directory); it defaults to the process cwd.
     """
-    safe_path = _make_safe_path(extra_roots)
+    safe_path = _make_safe_path(extra_roots, base=default_dir)
 
     @tool(side_effecting=False, idempotent=True)
     def read_file(path: str) -> str:
@@ -123,8 +133,11 @@ _read_file, _write_file, _list_directory = make_file_tools()
 read_file, write_file, list_directory = _read_file, _write_file, _list_directory
 
 
-def make_shell_tool(extra_roots: "list[str] | None" = None):
+def make_shell_tool(extra_roots: "list[str] | None" = None, *, default_dir: "str | Path | None" = None):
     """A ``run_shell`` tool whose *working directory* is confined to cwd + ``extra_roots``.
+
+    ``default_dir`` sets where a command with no explicit ``cwd`` runs (the task's
+    working directory); it defaults to the process cwd.
 
     Caveat: confinement only covers ``cwd`` — the shell itself is not sandboxed,
     so a command can still ``cd`` or use absolute paths to act outside the
@@ -133,7 +146,7 @@ def make_shell_tool(extra_roots: "list[str] | None" = None):
     enough for a local single-user assistant; do not expose this to untrusted
     multi-tenant input without a real sandbox (container, VM, seccomp, etc.).
     """
-    safe_path = _make_safe_path(extra_roots)
+    safe_path = _make_safe_path(extra_roots, base=default_dir)
 
     @tool(side_effecting=True)
     def run_shell(command: str, cwd: str = ".") -> str:
@@ -182,7 +195,7 @@ def fetch_url(url: str) -> str:
     return text
 
 
-def read_only_tools(extra_roots: "list[str] | None" = None) -> list:
+def read_only_tools(extra_roots: "list[str] | None" = None, *, default_dir: "str | Path | None" = None) -> list:
     """The safe, read-only default toolset, optionally confined to extra directories too.
 
     No ``calculator`` here on purpose — it's still defined above (and used directly
@@ -190,18 +203,26 @@ def read_only_tools(extra_roots: "list[str] | None" = None) -> list:
     actual agent toolsets lean on ``run_shell``/a model's own arithmetic instead of
     a second, narrower tool that does the same thing.
     """
-    rf, _wf, ld = make_file_tools(extra_roots) if extra_roots else (read_file, write_file, list_directory)
+    if extra_roots or default_dir:
+        rf, _wf, ld = make_file_tools(extra_roots, default_dir=default_dir)
+    else:
+        rf, ld = read_file, list_directory
     return [current_time, rf, ld, fetch_url]
 
 
-def all_tools(extra_roots: "list[str] | None" = None) -> list:
+def all_tools(extra_roots: "list[str] | None" = None, *, default_dir: "str | Path | None" = None) -> list:
     """Every built-in tool, including the side-effecting ``write_file``/``run_shell``.
 
     No dedicated mkdir or calculator tool on purpose — ``run_shell`` is the
     general-purpose escape hatch for both, and a model that already knows
     ``mkdir -p`` or basic arithmetic doesn't need a second, narrower tool
-    teaching it the same thing.
+    teaching it the same thing. ``default_dir`` makes relative paths and shell
+    commands default to the task's working directory (e.g. an attached project).
     """
-    rf, wf, ld = make_file_tools(extra_roots) if extra_roots else (read_file, write_file, list_directory)
-    shell = make_shell_tool(extra_roots) if extra_roots else run_shell
+    if extra_roots or default_dir:
+        rf, wf, ld = make_file_tools(extra_roots, default_dir=default_dir)
+        shell = make_shell_tool(extra_roots, default_dir=default_dir)
+    else:
+        rf, wf, ld = read_file, write_file, list_directory
+        shell = run_shell
     return [current_time, rf, ld, fetch_url, wf, shell]
